@@ -20,16 +20,8 @@ import fitz
 
 from . import __version__
 from .config import Config, parse_vertical_heights, parse_zone
-from .legend import parse_legend
-from .linking import find_leader_candidates, link_codes_to_pipes
-from .models import BBox
-from .ocr_codes import collect_hits, extract_codes
-from .pipes import detect_pipes, extract_drawings, format_histogram
-from .quantify import build_quantities
-from .report import (write_code_table, write_quantities_csv,
-                     write_quantities_xlsx, write_run_report)
-from .scale import determine_scale
-from .validate import read_facit, validate_against_facit
+from .pipeline import run_pipeline
+from .pipes import extract_drawings, format_histogram
 
 log = logging.getLogger("mangdning")
 
@@ -164,69 +156,30 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = input_pdf.stem
 
-    doc = fitz.open(str(input_pdf))
-    if not (0 <= cfg.page < len(doc)):
-        log.error("Sida %d finns inte (PDF:en har %d sidor)", cfg.page, len(doc))
-        return 1
-    page = doc[cfg.page]
-
     if args.calibrate:
-        data = extract_drawings(page, cfg)
+        doc = fitz.open(str(input_pdf))
+        if not (0 <= cfg.page < len(doc)):
+            log.error("Sida %d finns inte (PDF:en har %d sidor)",
+                      cfg.page, len(doc))
+            return 1
+        data = extract_drawings(doc[cfg.page], cfg)
+        doc.close()
         print(format_histogram(data))
         print("\nVälj rörklustrets bredd och kör igen med "
               "--pipe-width <bredd> (ev. --pipe-color R,G,B).")
         return 0
 
-    # --- Del A: koder via OCR ---
-    all_hits, text_info = collect_hits(page, cfg)
+    try:
+        outputs = run_pipeline(
+            input_pdf, cfg, out_dir, facit=args.facit,
+            on_scale=lambda scale, chains: confirm_scale(
+                scale, chains, skip=args.yes))
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 1
 
-    # --- Legend: systemkategorier + antalsuppgifter; auto-exkludera legendzon
-    prefix_map, expected_counts, legend_bbox = parse_legend(all_hits, cfg)
-    if legend_bbox is not None:
-        # Legendens kolumn (från rubriken och nedåt) exkluderas från kod-/
-        # rördetektering – robust komplement till manuella zoner.
-        zone = BBox(legend_bbox.x0 - 10, legend_bbox.y0 - 5,
-                    legend_bbox.x0 + 260, page.rect.height)
-        cfg.exclude_zones.append(zone.as_tuple())
-        log.info("Legendzon auto-exkluderad: %s", zone.as_tuple())
-
-    codes = extract_codes(all_hits, cfg)
-
-    # --- Del B: rörsträckor ur vektordata ---
-    chains, drawing_data, pipe_width, pipe_color = detect_pipes(page, cfg)
-
-    # --- Del C: koppla kod <-> rör via ledartrådar ---
-    leaders = find_leader_candidates(drawing_data, pipe_width, chains, cfg)
-    link_codes_to_pipes(codes, chains, leaders, cfg)
-
-    # --- Del D: skala + mängdning ---
-    scale = determine_scale(all_hits, cfg)
-    confirm_scale(scale, chains, skip=args.yes)
-    result = build_quantities(
-        codes, chains, scale, prefix_map, expected_counts, cfg,
-        document=input_pdf.name, sidetikett=f"Sida {cfg.page + 1}")
-
-    # --- Output ---
-    annotated = out_dir / f"{stem}_markerad.pdf"
-    from .annotate import annotate_pdf
-    annotate_pdf(input_pdf, annotated, codes, chains, leaders, cfg)
-    write_code_table(codes, out_dir / f"{stem}_koder.csv")
-    write_quantities_xlsx(result, out_dir / f"{stem}_mangder.xlsx")
-    write_quantities_csv(result, out_dir / f"{stem}_mangder.csv")
-    write_run_report(
-        out_dir / f"{stem}_rapport.txt", input_pdf=str(input_pdf),
-        codes=codes, chains=chains, scale=scale, result=result,
-        pipe_width=pipe_width, pipe_color=pipe_color, text_info=text_info,
-        histogram_text=format_histogram(drawing_data))
-
-    if args.facit:
-        facit = read_facit(args.facit)
-        report = validate_against_facit(result, facit)
-        val_path = out_dir / f"{stem}_validering.txt"
-        val_path.write_text(report.text(), encoding="utf-8")
-        print("\n" + report.text())
-        log.info("Valideringsrapport sparad: %s", val_path)
-
+    if outputs.validation_text:
+        print("\n" + outputs.validation_text)
     print(f"\nKlart. Utdata i {out_dir}/ – läs {stem}_rapport.txt för "
           "kända begränsningar och osäkerhetsflaggor.")
     return 0

@@ -57,6 +57,45 @@ PSM-lägen, kod-regex, kedjetolerans, lager m.m.). Allt filspecifikt kan även
 läggas i en JSON-konfigfil: `--config mall.json` (nycklarna = fälten i
 `mangdning/config.py:Config`).
 
+## Webbapp
+
+Samma pipeline finns som webbapp: ladda upp PDF:en i webbläsaren, följ
+bearbetningen och ladda ner alla resultatfiler. Formuläret har fält för
+skala, sida, rörlinjebredd, vertikalhöjder, DPI, OCR-läge och facit-CSV.
+
+```bash
+# Lokalt (kräver samma beroenden som CLI:t, inkl. Tesseract)
+uvicorn webapp.app:app
+# öppna http://127.0.0.1:8000
+```
+
+Bearbetningen körs i en bakgrundstråd per jobb (ett åt gången som standard,
+`WORKERS`-miljövariabeln höjer). Jobbfiler lagras i `jobs/` (`JOBS_DIR`)
+och rensas efter 24 h (`JOB_TTL_SECONDS`). Maxstorlek på uppladdningar styrs
+med `MAX_UPLOAD_MB` (standard 100).
+
+### Publicera på nätet
+
+OCR-körningarna tar flera minuter och kräver Tesseract som systemprogram –
+välj därför en containerplattform, inte serverless (Vercel/Netlify har för
+korta tidsgränser och saknar Tesseract). Repot innehåller en `Dockerfile`
+som fungerar direkt på:
+
+- **Railway** (enklast): railway.com → New Project → Deploy from GitHub repo
+  → välj detta repo och branchen. Railway hittar Dockerfilen själv och
+  publicerar en URL (Settings → Networking → Generate Domain).
+- **Render**: render.com → New → Web Service → koppla repot, Runtime: Docker.
+- **Fly.io**: `fly launch` i repokatalogen.
+
+API:t: `POST /api/jobs` (multipart: `file`, valfritt `facit`, `scale`,
+`page`, `pipe_width`, `vertikalhojd`, `dpi`, `ocr=auto|force|off`),
+`GET /api/jobs/{id}` (status/progress/summering),
+`GET /api/jobs/{id}/files/{namn}` (nedladdning), `GET /health`.
+
+Observera att webbappen inte har någon inloggning – publicera den inte
+öppet med känsliga ritningar utan att lägga plattformens skydd framför
+(t.ex. Railways private networking, en access-proxy eller basic auth).
+
 ## Utdata
 
 | Fil | Innehåll |
@@ -99,8 +138,13 @@ mangdning/
   annotate.py            markerad PDF med OCG-lager
   report.py              XLSX/CSV/rapport-skrivare
   validate.py            Del D9: avvikelserapport mot facit-CSV
-  cli.py                 orkestrering + argumentparsning
-tests/                   70 enhetstester + integrationstest på syntetisk PDF
+  pipeline.py            hela Del A-D som återanvändbar funktion
+  cli.py                 argumentparsning + interaktiv skalverifiering
+webapp/
+  app.py                 FastAPI-app: jobbkö, status-API, filnedladdning
+  static/index.html      uppladdningssida med progress och resultat
+Dockerfile               container för Railway/Render/Fly.io
+tests/                   77 tester inkl. integrationstest och webapp-API
 ```
 
 ## Kända begränsningar

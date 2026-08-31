@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mängdning av VVS/VA-ritningar</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --ink: #1c2530; --muted: #5b6a7a;
+    --accent: #1565c0; --accent-ink: #ffffff; --border: #dde4ea;
+    --warn-bg: #fff7e6; --warn-border: #e6c766; --err: #b3261e;
+    --ok: #1e7d3e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+  header h1 { font-size: 26px; margin: 0 0 4px; }
+  header p { color: var(--muted); margin: 0 0 28px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 24px; margin-bottom: 20px;
+  }
+  .drop {
+    border: 2px dashed var(--border); border-radius: 10px; padding: 36px;
+    text-align: center; color: var(--muted); cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop.hover, .drop:hover { border-color: var(--accent); background: #f0f6fd; }
+  .drop strong { color: var(--ink); }
+  .filename { margin-top: 10px; font-weight: 600; color: var(--accent); }
+  fieldset {
+    border: 1px solid var(--border); border-radius: 8px;
+    margin: 20px 0 0; padding: 14px 16px 16px;
+  }
+  legend { padding: 0 6px; color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 3px; }
+  input[type=text], input[type=number] {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--border);
+    border-radius: 6px; font: inherit; background: #fff; color: var(--ink);
+  }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  button {
+    margin-top: 20px; padding: 11px 26px; border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--accent-ink); font: inherit;
+    font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { display: flex; align-items: center; gap: 12px; }
+  .spinner {
+    width: 20px; height: 20px; border: 3px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 1s linear infinite; flex: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 14px; }
+  .files a {
+    display: block; padding: 12px 14px; border: 1px solid var(--border);
+    border-radius: 8px; text-decoration: none; color: var(--accent);
+    font-weight: 600; background: #fbfcfe;
+  }
+  .files a span { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 14px 0 4px; }
+  .stat { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 20px; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  .warnings {
+    background: var(--warn-bg); border: 1px solid var(--warn-border);
+    border-radius: 8px; padding: 12px 16px; margin-top: 16px; font-size: 14px;
+  }
+  .warnings ul { margin: 6px 0 0; padding-left: 20px; }
+  .error { color: var(--err); font-weight: 600; }
+  .ok { color: var(--ok); font-weight: 600; }
+  pre.validation {
+    background: #f7f9fb; border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; overflow-x: auto; font-size: 12.5px; margin-top: 14px;
+  }
+  footer { color: var(--muted); font-size: 13px; margin-top: 28px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Mängdning av VVS/VA-ritningar</h1>
+    <p>Ladda upp en CAD-exporterad PDF-ritning (AutoCAD, A1/A0) och få en
+       markerad PDF plus mängdförteckning (Excel/CSV) som kalkylunderlag.</p>
+  </header>
+
+  <div class="card" id="form-card">
+    <form id="form">
+      <div class="drop" id="drop" tabindex="0">
+        <strong>Släpp PDF-ritningen här</strong> eller klicka för att välja fil
+        <div class="filename" id="filename" hidden></div>
+        <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+      </div>
+
+      <fieldset>
+        <legend>Inställningar (valfria)</legend>
+        <div class="grid">
+          <div>
+            <label for="scale">Skala</label>
+            <input type="text" id="scale" placeholder="t.ex. 1:50">
+            <div class="hint">Tomt = läses ur titelblock/skalstock</div>
+          </div>
+          <div>
+            <label for="page">Sida i PDF:en</label>
+            <input type="number" id="page" value="1" min="1">
+          </div>
+          <div>
+            <label for="pipe_width">Rörlinjebredd (pt)</label>
+            <input type="text" id="pipe_width" placeholder="auto">
+            <div class="hint">Tomt = väljs automatiskt via histogram</div>
+          </div>
+          <div>
+            <label for="vertikalhojd">Vertikalhöjd per system</label>
+            <input type="text" id="vertikalhojd"
+                   placeholder="Rör tappvatten=2.8,Spill- dagvatten=2.8">
+            <div class="hint">Antagen höjd för vertikala rörfall (m)</div>
+          </div>
+          <div>
+            <label for="dpi">OCR-upplösning (DPI)</label>
+            <input type="number" id="dpi" placeholder="450" min="72" max="900">
+          </div>
+          <div>
+            <label for="ocr">OCR</label>
+            <select id="ocr" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font:inherit;background:#fff;color:var(--ink)">
+              <option value="auto" selected>Auto (vid vektoriserad text)</option>
+              <option value="force">Tvinga OCR</option>
+              <option value="off">Av (PDF:en har riktig text)</option>
+            </select>
+          </div>
+          <div>
+            <label for="facit">Facit-CSV (validering)</label>
+            <input type="file" id="facit" accept=".csv,text/csv">
+          </div>
+        </div>
+      </fieldset>
+
+      <button type="submit" id="submit" disabled>Starta mängdning</button>
+    </form>
+  </div>
+
+  <div class="card" id="status-card" hidden>
+    <div class="status">
+      <div class="spinner" id="spinner"></div>
+      <div>
+        <div id="status-text">Laddar upp …</div>
+        <div class="hint">OCR på en A1-ritning i hög upplösning tar
+          typiskt några minuter – låt fliken vara öppen.</div>
+      </div>
+    </div>
+    <div id="error" class="error" hidden></div>
+  </div>
+
+  <div class="card" id="result-card" hidden>
+    <h2 style="margin-top:0">Resultat</h2>
+    <div class="stats" id="stats"></div>
+    <div id="scale-line"></div>
+    <div class="files" id="files"></div>
+    <div class="warnings" id="warnings" hidden>
+      <strong>Varningar och osäkerhetsflaggor</strong>
+      <ul id="warning-list"></ul>
+    </div>
+    <pre class="validation" id="validation" hidden></pre>
+    <button type="button" id="again" style="margin-top:18px">Kör en ny ritning</button>
+  </div>
+
+  <footer>
+    Mängderna är en uppskattning byggd på OCR och vektoranalys – kontrollera
+    alltid skalfliken och varningarna i mängdförteckningen innan siffrorna
+    används för kalkyl eller inköp.
+  </footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const drop = $("drop"), fileInput = $("file"), submitBtn = $("submit");
+let pollTimer = null;
+
+drop.addEventListener("click", () => fileInput.click());
+drop.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") fileInput.click();
+});
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("hover"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("hover"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault(); drop.classList.remove("hover");
+  if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; onFile(); }
+});
+fileInput.addEventListener("change", onFile);
+
+function onFile() {
+  const f = fileInput.files[0];
+  $("filename").hidden = !f;
+  if (f) $("filename").textContent = f.name;
+  submitBtn.disabled = !f;
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = fileInput.files[0];
+  if (!f) return;
+  $("form-card").hidden = true;
+  $("status-card").hidden = false;
+  $("error").hidden = true;
+  $("spinner").hidden = false;
+  $("status-text").textContent = "Laddar upp …";
+
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("scale", $("scale").value);
+  fd.append("page", $("page").value || "1");
+  fd.append("pipe_width", $("pipe_width").value);
+  fd.append("vertikalhojd", $("vertikalhojd").value);
+  fd.append("dpi", $("dpi").value);
+  fd.append("ocr", $("ocr").value);
+  if ($("facit").files[0]) fd.append("facit", $("facit").files[0]);
+
+  try {
+    const res = await fetch("/api/jobs", { method: "POST", body: fd });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const { job_id } = await res.json();
+    poll(job_id);
+  } catch (err) {
+    showError(err.message);
+  }
+});
+
+function poll(jobId) {
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+      const job = await res.json();
+      if (job.status === "error") { showError(job.error || "Okänt fel"); return; }
+      if (job.status === "done") {
+        clearInterval(pollTimer);
+        showResult(jobId, job);
+        return;
+      }
+      $("status-text").textContent = job.stage || "Bearbetar …";
+    } catch (err) { showError(err.message); }
+  }, 2000);
+}
+
+function showError(msg) {
+  if (pollTimer) clearInterval(pollTimer);
+  $("spinner").hidden = true;
+  $("status-text").textContent = "Körningen misslyckades.";
+  const el = $("error");
+  el.textContent = msg;
+  el.hidden = false;
+  const back = document.createElement("button");
+  back.textContent = "Försök igen";
+  back.type = "button";
+  back.onclick = () => location.reload();
+  el.appendChild(document.createElement("br"));
+  el.appendChild(back);
+}
+
+const FILE_LABELS = {
+  markerad_pdf: ["Markerad PDF", "rör i färg per kod, kodrutor, ledartrådar"],
+  mangder_xlsx: ["Mängdförteckning (Excel)", "radnivå + summering + skala + varningar"],
+  mangder_csv: ["Mängdförteckning (CSV)", "samma radnivå som semikolon-CSV"],
+  koder_csv: ["Kodtabell (CSV)", "kod, position, confidence, koppling"],
+  rapport_txt: ["Körningsrapport", "kopplingsgrad, skala, kända begränsningar"],
+  validering_txt: ["Valideringsrapport", "avvikelser mot uppladdat facit"],
+};
+
+function showResult(jobId, job) {
+  $("status-card").hidden = true;
+  $("result-card").hidden = false;
+  const s = job.summary || {};
+
+  const stats = [
+    [s.n_rader, "rader i mängdförteckningen"],
+    [s.n_unika_koder, "unika koder"],
+    [`${s.n_koder_kopplade}/${s.n_koder}`, "koder kopplade till rör"],
+    [`${s.n_rorstrackor_kopplade}/${s.n_rorstrackor}`, "rörsträckor med kod"],
+  ];
+  $("stats").innerHTML = stats.map(([v, l]) =>
+    `<div class="stat"><b>${v ?? "–"}</b><span>${l}</span></div>`).join("");
+
+  const scaleEl = $("scale-line");
+  if (s.pts_per_meter) {
+    scaleEl.innerHTML = `<span class="ok">Skala: ${s.skala_text || "–"}</span>
+      (${s.skala_metod}, ${Number(s.pts_per_meter).toFixed(2)} pt/m) –
+      kontrollera skalfliken i Excel-filen innan siffrorna används.`;
+  } else {
+    scaleEl.innerHTML = `<span class="error">Skala kunde inte läsas</span> –
+      längder anges i PDF-punkter. Kör igen med skalfältet ifyllt (t.ex. 1:50).`;
+  }
+
+  const filesEl = $("files");
+  filesEl.innerHTML = "";
+  for (const [key, name] of Object.entries(job.files)) {
+    const [label, desc] = FILE_LABELS[key] || [name, ""];
+    const a = document.createElement("a");
+    a.href = `/api/jobs/${jobId}/files/${encodeURIComponent(name)}`;
+    a.innerHTML = `${label}<span>${desc}</span>`;
+    filesEl.appendChild(a);
+  }
+
+  if (job.files.validering_txt) {
+    fetch(`/api/jobs/${jobId}/files/${encodeURIComponent(job.files.validering_txt)}`)
+      .then(r => r.text())
+      .then(t => { $("validation").textContent = t; $("validation").hidden = false; })
+      .catch(() => {});
+  }
+
+  const warnings = (s.varningar || []).concat(s.antal_kontroller || []);
+  if (warnings.length) {
+    $("warnings").hidden = false;
+    $("warning-list").innerHTML =
+      warnings.map(w => `<li>${escapeHtml(w)}</li>`).join("");
+  }
+  $("again").onclick = () => location.reload();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g,
+    (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+</script>
+</body>
+</html>

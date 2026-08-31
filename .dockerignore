@@ -1,6 +1,6 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-out/
-.venv/
+.git
 jobs/
+out/
+__pycache__/
+.pytest_cache/
+tests/
