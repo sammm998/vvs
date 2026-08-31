@@ -79,3 +79,30 @@ def test_okand_skala_ger_varning():
     assert not result.known
     assert result.method == "okänd"
     assert result.warnings
+
+
+def test_avhuggen_skaltext_forlangs_inte_till_fel_skala():
+    """OCR läser gärna "1:50 (1:100)" som både "1:5" och "1:50" – den
+    avhuggna läsningen får inte vinna (buggen som gav skala 1:5)."""
+    hits = [hit("SKALA", 2000, 1500), hit("1:5", 2040, 1500),
+            hit("1:50", 2080, 1500), hit("1:100", 2130, 1500)]
+    pts, text = scale_from_title_text(hits)
+    assert text == "1:50"
+    assert pts == pytest.approx(56.6929, abs=0.01)
+
+
+def test_ovanliga_tal_i_titelblocket_ignoreras():
+    """Siffror som "1:3" ur en tabell är ingen ritningsskala."""
+    hits = [hit("SKALA", 2000, 1500), hit("1:3", 2040, 1500),
+            hit("1:100", 2080, 1500)]
+    pts, text = scale_from_title_text(hits)
+    assert text == "1:100"
+
+
+def test_a1_skalan_valjs_fore_a3_skalan():
+    """"SKALA A1 (A3) 1:50 (1:100)" – A1-skalan (1:50) gäller papperet."""
+    hits = [hit("SKALA", 2000, 1500), hit("A1", 2030, 1500),
+            hit("(A3)", 2055, 1500), hit("1:50", 2090, 1500),
+            hit("(1:100)", 2125, 1500)]
+    pts, text = scale_from_title_text(hits)
+    assert text == "1:50"

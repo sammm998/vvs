@@ -74,29 +74,47 @@ def link_codes_to_pipes(codes: list[CodeHit], chains: list[PipeChain],
     """För varje godkänd kodträff: hitta närmaste ledartråd med en ändpunkt
     nära kodens bbox, följ den till andra änden, matcha mot närmaste punkt
     på en rörsträcka. Fallback: direkt närhet kod->rör."""
+    # Rutnätsindex över ledartrådarnas ändpunkter – en riktig ritning kan ha
+    # tiotusentals tunna diagonaler (skraffering), och alla koder ska inte
+    # behöva skanna alla trådar.
+    cell = max(cfg.leader_code_tol_pt, 1.0)
+    leader_grid: dict[tuple[int, int], list[tuple[Leader, Point, Point]]] = {}
+    for leader in leaders:
+        for near, far in ((leader.p1, leader.p2), (leader.p2, leader.p1)):
+            key = (int(near[0] // cell), int(near[1] // cell))
+            leader_grid.setdefault(key, []).append((leader, near, far))
+
     used_leaders: set[int] = set()
     for code in codes:
         if code.excluded:
             continue
         bbox = code.bbox.expanded(cfg.leader_code_tol_pt)
 
+        candidates: list[tuple[Leader, Point, Point]] = []
+        gx0 = int(bbox.x0 // cell) - 1
+        gx1 = int(bbox.x1 // cell) + 1
+        gy0 = int(bbox.y0 // cell) - 1
+        gy1 = int(bbox.y1 // cell) + 1
+        for gx in range(gx0, gx1 + 1):
+            for gy in range(gy0, gy1 + 1):
+                candidates.extend(leader_grid.get((gx, gy), []))
+
         best_leader: Leader | None = None
         best_chain: PipeChain | None = None
         best_score = None
-        for leader in leaders:
+        for leader, near, far in candidates:
             if leader.id in used_leaders:
                 continue
-            for near, far in ((leader.p1, leader.p2), (leader.p2, leader.p1)):
-                d_code = code.bbox.distance_to_point(near)
-                if not bbox.contains(near) and d_code > cfg.leader_code_tol_pt:
-                    continue
-                chain, d_pipe = _nearest_chain(far, chains, cfg.leader_pipe_tol_pt)
-                if chain is None:
-                    continue
-                score = d_code + d_pipe
-                if best_score is None or score < best_score:
-                    best_score = score
-                    best_leader, best_chain = leader, chain
+            d_code = code.bbox.distance_to_point(near)
+            if not bbox.contains(near) and d_code > cfg.leader_code_tol_pt:
+                continue
+            chain, d_pipe = _nearest_chain(far, chains, cfg.leader_pipe_tol_pt)
+            if chain is None:
+                continue
+            score = d_code + d_pipe
+            if best_score is None or score < best_score:
+                best_score = score
+                best_leader, best_chain = leader, chain
         if best_chain is not None and best_leader is not None:
             code.linked_chain = best_chain.id
             code.link_method = "leader"

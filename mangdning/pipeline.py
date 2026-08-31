@@ -61,10 +61,14 @@ def run_pipeline(input_pdf: str | Path, cfg: Config, out_dir: str | Path,
         (CLI:t använder den för det interaktiva verifieringssteget).
     on_stage(stage_id, beskrivning): progressrapportering per steg.
     """
-    def stage(stage_id: str):
+    def stage(stage_id: str, label: str | None = None):
         if on_stage is not None:
-            label = dict(STAGES).get(stage_id, stage_id)
-            on_stage(stage_id, label)
+            on_stage(stage_id, label or dict(STAGES).get(stage_id, stage_id))
+
+    def ocr_progress(done: int, total: int):
+        if on_stage is not None and total:
+            on_stage("ocr", f"Del A: läser textkoder (OCR) – "
+                            f"{done * 100 // total} % ({done}/{total} rutor)")
 
     input_pdf = Path(input_pdf)
     out_dir = Path(out_dir)
@@ -80,7 +84,7 @@ def run_pipeline(input_pdf: str | Path, cfg: Config, out_dir: str | Path,
 
         # --- Del A: koder via OCR ---
         stage("ocr")
-        all_hits, text_info = collect_hits(page, cfg)
+        all_hits, text_info = collect_hits(page, cfg, progress=ocr_progress)
 
         # Legend: systemkategorier + antalsuppgifter; auto-exkludera legendzon
         prefix_map, expected_counts, legend_bbox = parse_legend(all_hits, cfg)
@@ -112,7 +116,6 @@ def run_pipeline(input_pdf: str | Path, cfg: Config, out_dir: str | Path,
             document=input_pdf.name, sidetikett=f"Sida {cfg.page + 1}")
 
         # --- Output ---
-        stage("output")
         outputs = PipelineOutputs(
             annotated_pdf=out_dir / f"{stem}_markerad.pdf",
             code_table_csv=out_dir / f"{stem}_koder.csv",
@@ -120,8 +123,10 @@ def run_pipeline(input_pdf: str | Path, cfg: Config, out_dir: str | Path,
             quantities_csv=out_dir / f"{stem}_mangder.csv",
             report_txt=out_dir / f"{stem}_rapport.txt",
         )
+        stage("output", "Skriver markerad PDF")
         annotate_pdf(input_pdf, outputs.annotated_pdf, codes, chains,
                      leaders, cfg)
+        stage("output", "Skriver mängdförteckning och rapport")
         write_code_table(codes, outputs.code_table_csv)
         write_quantities_xlsx(result, outputs.quantities_xlsx)
         write_quantities_csv(result, outputs.quantities_csv)

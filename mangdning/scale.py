@@ -23,6 +23,10 @@ log = logging.getLogger(__name__)
 # 1 mm = 72/25.4 pt.
 MM_PER_PT = 25.4 / 72.0
 
+# Standardskalor för bygg-/VVS-ritningar. Används för att sålla bort
+# OCR-artefakter som "1:5" (avhugget "1:50") och "1:3" (ur en tabell).
+COMMON_SCALES = {20, 25, 50, 100, 200, 250, 400, 500, 1000, 2000}
+
 _SCALE_TEXT_RE = re.compile(r"\b1\s*[:;]\s*(\d{1,4})\b")
 _PT_PER_M_RE = re.compile(r"^([0-9]+(?:[\.,][0-9]+)?)\s*pt/m$", re.IGNORECASE)
 _RATIO_RE = re.compile(r"^1\s*:\s*(\d{1,4})$")
@@ -63,9 +67,20 @@ def scale_from_title_text(hits: list[OcrHit]) -> tuple[float, str] | None:
         return None
     near = [c for c in candidates if c[2]]
     pool = near or candidates
-    # första (minsta N brukar vara huvudskalan i "1:50 (1:100)")
-    n = min(c[0] for c in pool)
-    text = next(c[1] for c in pool if c[0] == n)
+    # OCR trunkerar gärna "1:50" till "1:5" – en avhuggen läsning är alltid
+    # ett prefix till en längre kandidat på samma ställe, så förläng den
+    # innan huvudskalan väljs.
+    values = sorted({c[0] for c in pool})
+    resolved: list[int] = []
+    for n in values:
+        longer = [m for m in values
+                  if m != n and str(m).startswith(str(n))]
+        resolved.append(max(longer) if longer else n)
+
+    # Huvudskalan är den för det ritade formatet (A1), som står först och är
+    # den mindre nämnaren i "1:50 (1:100)". Bland rimliga byggritningsskalor.
+    plausible = [n for n in resolved if n in COMMON_SCALES] or resolved
+    n = min(plausible)
     return ratio_to_pts_per_meter(n), f"1:{n}"
 
 

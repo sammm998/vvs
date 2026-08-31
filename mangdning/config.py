@@ -62,13 +62,25 @@ class Config:
     force_ocr: bool = False
     skip_ocr: bool = False
     native_word_threshold: int = 100  # fler riktiga ord än så => PDF-text räcker
+    ocr_threads: int = 0            # parallella tesseract-processer; 0 = auto
 
     # --- Del B: rördetektering ---
     pipe_width: float | None = None       # None = auto via histogram
     pipe_width_tol: float = 0.15          # relativ tolerans mot klustret
+    # Ett bredd-kluster räknas som ett riktigt ritlager (och inte enstaka
+    # specialobjekt) om det har minst så här många segment – båda villkoren
+    # ska uppfyllas. Styr vilket kluster autovalet får landa på.
+    min_cluster_count: int = 40
+    min_cluster_frac: float = 0.002
     pipe_color: tuple[float, float, float] | None = None  # None = auto
     color_tol: float = 0.15
     chain_tol_pt: float = 1.5             # ändpunktstolerans vid kedjning
+    # Streckade rör exporteras som fristående korta segment; luckor upp till
+    # denna längd mellan kollinjära segment bryggas och räknas som rörlängd.
+    # 0 = av (behandla varje streck som en egen sträcka).
+    dash_gap_pt: float = 5.0
+    dash_angle_deg: float = 8.0
+    bezier_steps: int = 4                 # utplattning av rörböjar (kurvor)
     frame_len_pt: float = 700.0           # längre raka ensamma linjer = ram/rutnät
     min_chain_len_pt: float = 3.0         # kortare kedjor ignoreras (brus)
 

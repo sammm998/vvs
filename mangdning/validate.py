@@ -26,6 +26,7 @@ class FacitEntry:
     n_length_rows: int = 0
     total_length: float = 0.0
     n_points: int = 0
+    n_vertical_rows: int = 0
     antal_vs: int = 0
     lager: str = ""
 
@@ -38,6 +39,12 @@ class ValidationReport:
 
     def text(self) -> str:
         return "\n".join(self.lines)
+
+
+def _cell(row: dict, key: str) -> str:
+    """Cellvärde som text – XLSX ger tal/None, CSV ger strängar."""
+    value = row.get(key)
+    return "" if value is None else str(value).strip()
 
 
 def _to_float(value: str) -> float | None:
@@ -55,33 +62,53 @@ def _to_int(value: str) -> int | None:
     return int(f) if f is not None else None
 
 
-def read_facit(path: str | Path) -> dict[str, FacitEntry]:
-    """Läs facit-CSV (semikolon- eller kommaseparerad, decimalkomma stöds)."""
-    raw = Path(path).read_text(encoding="utf-8-sig")
+def _read_facit_rows(path: Path) -> list[dict]:
+    """Läs facit-raderna ur XLSX eller CSV till dict per rad."""
+    if path.suffix.lower() in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(str(path), data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            raise ValueError(f"Facit-filen är tom: {path}")
+        header = [str(c).strip() if c is not None else "" for c in rows[0]]
+        return [dict(zip(header, r)) for r in rows[1:]]
+
+    raw = path.read_text(encoding="utf-8-sig")
     if not raw.strip():
         raise ValueError(f"Facit-filen är tom: {path}")
-    header = raw.splitlines()[0]
-    delimiter = ";" if header.count(";") >= header.count(",") else ","
-    reader = csv.DictReader(raw.splitlines(), delimiter=delimiter)
-    if reader.fieldnames is None or "Subject" not in reader.fieldnames:
+    header_line = raw.splitlines()[0]
+    delimiter = ";" if header_line.count(";") >= header_line.count(",") else ","
+    return list(csv.DictReader(raw.splitlines(), delimiter=delimiter))
+
+
+def read_facit(path: str | Path) -> dict[str, FacitEntry]:
+    """Läs en facit-mängdförteckning (XLSX eller CSV, decimalkomma stöds)."""
+    path = Path(path)
+    rows = _read_facit_rows(path)
+    if rows and "Subject" not in rows[0]:
         raise ValueError(
-            f"Facit-filen saknar 'Subject'-kolumn (kolumner: {reader.fieldnames})")
+            f"Facit-filen saknar 'Subject'-kolumn "
+            f"(kolumner: {list(rows[0])})")
 
     entries: dict[str, FacitEntry] = {}
-    for row in reader:
-        subject = (row.get("Subject") or "").strip()
+    for row in rows:
+        subject = _cell(row, "Subject")
         if not subject:
             continue
         entry = entries.setdefault(subject, FacitEntry(subject=subject))
         entry.n_rows += 1
-        entry.lager = entry.lager or (row.get("Lager") or "").strip()
-        length = _to_float(row.get("Längd") or row.get("Langd") or "")
+        entry.lager = entry.lager or _cell(row, "Lager")
+        length = _to_float(_cell(row, "Längd") or _cell(row, "Langd"))
+        antal_vs = _to_int(_cell(row, "Antal_VS"))
         if length is not None:
             entry.n_length_rows += 1
             entry.total_length += length
+        elif antal_vs:
+            entry.n_vertical_rows += 1
         else:
             entry.n_points += 1
-        antal_vs = _to_int(row.get("Antal_VS") or "")
         if antal_vs:
             entry.antal_vs += antal_vs
     log.info("Facit inläst: %d rader, %d unika koder",

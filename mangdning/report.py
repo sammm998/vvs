@@ -18,36 +18,60 @@ from .quantify import QuantityResult
 
 log = logging.getLogger(__name__)
 
+# Exakt kolumnuppsättning ur facit-exporten, så att resultatet kan läggas
+# sida vid sida med en professionell mängdning.
 FACIT_COLUMNS = [
     "Version", "Document", "Subject", "Sorterings_siffror", "Sidetikett",
     "Color", "Kommentarer", "Längd", "unit", "Lager", "Antal_VS",
     "Vertikal_höjd_VS", "Total_vertikalhöjd_VS", "unit2",
-    "Kapitel_i_Sektionsdata_VS", "Exportval_Vs", "Byggdelsnummer",
+    "Kapitel_i_Sektionsdata", "Exportval_Vs", "Byggdelsnummer",
     "Kontroll_Vs",
 ]
-EXTRA_COLUMNS = ["Antal", "Källa"]
+# Egna spårbarhetskolumner sist – finns inte i facit men behövs för att
+# kunna gå tillbaka till rätt rörsträcka/kod i den markerade PDF:en.
+EXTRA_COLUMNS = ["Antal", "Källa", "Osäkerhet"]
+
+VERSION = "1.0"
+
+
+def _num(value: float | None) -> str:
+    """Tal med decimalkomma, som i facit."""
+    return "" if value is None else f"{value:.1f}".replace(".", ",")
 
 
 def _facit_row(row) -> list:
-    length_unit = "m"
+    is_vertical = row.antal_vs is not None
+    if is_vertical:
+        kommentar = str(row.antal_vs)
+        exportval = "Total vertikal höjd VS"
+    elif row.langd_m is not None:
+        kommentar = f"{_num(row.langd_m)} m"
+        exportval = "Längd"
+    else:
+        kommentar = ""
+        exportval = ""
     return [
-        "",                       # Version
+        VERSION,                  # Version
         row.document,             # Document
         row.subject,              # Subject
         "",                       # Sorterings_siffror
         row.sidetikett,           # Sidetikett
         row.color,                # Color
-        row.kommentar,            # Kommentarer
+        kommentar,                # Kommentarer
         row.langd_m if row.langd_m is not None else "",   # Längd
-        length_unit if row.langd_m is not None else "",   # unit
+        "m" if row.langd_m is not None else "",           # unit
         row.lager,                # Lager
         row.antal_vs if row.antal_vs is not None else "",
         row.vertikal_hojd_m if row.vertikal_hojd_m is not None else "",
         row.total_vertikalhojd_m if row.total_vertikalhojd_m is not None else "",
         "m" if row.total_vertikalhojd_m is not None else "",  # unit2
-        "", "", "", "",           # Kapitel/Exportval/Byggdelsnummer/Kontroll
+        "",                       # Kapitel_i_Sektionsdata
+        exportval,                # Exportval_Vs
+        "",                       # Byggdelsnummer
+        "Avmarkerad",             # Kontroll_Vs
         row.antal if row.antal is not None else "",       # Antal (st)
         row.kalla,                # Källa
+        row.kommentar,            # Osäkerhet (våra flaggor)
     ]
 
 

@@ -77,19 +77,28 @@ def test_punktkomponenter_ar_forstklassiga_rader():
     assert agg.n_punkter == 2
 
 
-def test_vertikaler_raknas_som_antal_ganger_konfigurerad_hojd():
-    """Del D punkt 6: Antal_VS × Vertikal_höjd_VS = Total_vertikalhöjd_VS,
-    höjden är en konfigurerad parameter (aldrig uppmätt) och flaggas."""
+def test_vertikaler_blir_egna_rader_som_i_facit():
+    """Del D punkt 6: vertikala rörfall redovisas som EGNA rader med
+    Subject "<kod> Vertikal" och Antal_VS × Vertikal_höjd_VS =
+    Total_vertikalhöjd_VS – aldrig som längd, och aldrig som kolumner på
+    rörraden (så gör facit)."""
     cfg = Config()
     cfg.vertical_heights["Spill- dagvatten"] = 2.8
     codes = [make_code(0, "S3-R8-75", linked_chain=0)]
     chains = [make_chain(0, 100, linked=[0], vertical=2)]
     result = build_quantities(codes, chains, make_scale(), {}, {}, cfg)
-    row = next(r for r in result.rows if r.antal_vs)
-    assert row.antal_vs == 2
-    assert row.vertikal_hojd_m == pytest.approx(2.8)
-    assert row.total_vertikalhojd_m == pytest.approx(5.6)
-    assert "ANTAGANDE" in row.kommentar
+
+    pipe_row = next(r for r in result.rows if r.subject == "S3-R8-75")
+    assert pipe_row.langd_m is not None
+    assert pipe_row.antal_vs is None  # vertikalen ligger inte på rörraden
+
+    vert = next(r for r in result.rows if r.subject == "S3-R8-75 Vertikal")
+    assert vert.langd_m is None      # vertikaler har antal, inte längd
+    assert vert.antal_vs == 2
+    assert vert.vertikal_hojd_m == pytest.approx(2.8)
+    assert vert.total_vertikalhojd_m == pytest.approx(5.6)
+    assert "ANTAGANDE" in vert.kommentar
+    assert vert.color == pipe_row.color  # samma färg som sin rörkod
     assert any("verifieras" in w for w in result.warnings)
 
 

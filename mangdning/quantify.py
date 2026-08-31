@@ -18,6 +18,8 @@ from .models import CodeHit, PipeChain, QuantityRow, ScaleResult
 log = logging.getLogger(__name__)
 
 UNLINKED_SUBJECT = "OKOPPLAD RÖRSTRÄCKA"
+# Facit redovisar vertikala rörfall som egna rader med kodens namn + suffix.
+VERTICAL_SUFFIX = "Vertikal"
 
 
 @dataclass
@@ -101,35 +103,41 @@ def build_quantities(codes: list[CodeHit], chains: list[PipeChain],
         if primary.conf < 60:
             flags.append(f"låg OCR-confidence ({primary.conf:.0f})")
 
-        antal_vs = None
-        vh = None
-        total_vh = None
+        rows.append(QuantityRow(
+            subject=subject,
+            lager=system,
+            color=color_for_code(subject),
+            langd_m=_round_m(eff_len),
+            kalla=f"chain:{chain.id}",
+            kommentar="; ".join(flags),
+            document=document, sidetikett=sidetikett,
+        ))
+
+        # Vertikala rörfall redovisas som EGNA rader med Subject
+        # "<kod> Vertikal" (som i facit), med Antal_VS × Vertikal_höjd_VS,
+        # aldrig som längd på rörraden.
         if chain.vertical_symbols:
             antal_vs = chain.vertical_symbols * n
             vh = cfg.vertical_heights.get(
                 system, cfg.vertical_heights.get("Okänt system", 2.8))
-            total_vh = antal_vs * vh
-            flags.append(f"vertikalhöjd {vh} m är ett ANTAGANDE (konfig), "
-                         "inte uppmätt")
+            rows.append(QuantityRow(
+                subject=f"{subject} {VERTICAL_SUFFIX}",
+                lager=system,
+                color=color_for_code(subject),
+                antal_vs=antal_vs,
+                vertikal_hojd_m=vh,
+                total_vertikalhojd_m=_round_m(antal_vs * vh),
+                kalla=f"chain:{chain.id}",
+                kommentar=f"vertikalhöjd {vh} m är ett ANTAGANDE (konfig), "
+                          "inte uppmätt",
+                document=document, sidetikett=sidetikett,
+            ))
             if not vh_warned:
                 warnings.append(
                     "Vertikalhöjder är fasta konfigurerade antaganden per "
                     "system (--vertikalhojd) – en planvy visar aldrig vertikal "
                     "höjd geometriskt. Måste verifieras av användaren.")
                 vh_warned = True
-
-        rows.append(QuantityRow(
-            subject=subject,
-            lager=system,
-            color=color_for_code(subject),
-            langd_m=_round_m(eff_len),
-            antal_vs=antal_vs,
-            vertikal_hojd_m=vh,
-            total_vertikalhojd_m=_round_m(total_vh),
-            kalla=f"chain:{chain.id}",
-            kommentar="; ".join(flags),
-            document=document, sidetikett=sidetikett,
-        ))
 
     # --- Punktkomponenter (Del D punkt 7): förstklassigt delresultat ---
     # Koder utan rörkoppling som inte exkluderats = punktmarkeringar

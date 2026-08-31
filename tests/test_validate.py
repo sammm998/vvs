@@ -2,6 +2,8 @@
 
 import textwrap
 
+import pytest
+
 from mangdning.models import ScaleResult
 from mangdning.quantify import Aggregate, QuantityResult
 from mangdning.validate import read_facit, validate_against_facit
@@ -75,3 +77,50 @@ def test_kod_som_bara_finns_hos_oss_rapporteras(tmp_path):
     report = validate_against_facit(make_result(ours), facit)
     assert any("saknas i facit" in l for l in report.lines)
     assert any("5S-R8-75" in l for l in report.lines)
+
+
+def test_las_facit_fran_xlsx(tmp_path):
+    """Facit levereras i praktiken som XLSX från mängdningsverktyget."""
+    from openpyxl import Workbook
+
+    path = tmp_path / "facit.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Version", "Document", "Subject", "Sorterings_siffror",
+               "Sidetikett", "Color", "Kommentarer", "Längd", "unit", "Lager",
+               "Antal_VS", "Vertikal_höjd_VS", "Total_vertikalhöjd_VS"])
+    ws.append(["1.0", "p.pdf", "S3-R8-75", "", "[1] p", "#8000FF", "5,8 m",
+               "5,8", "m", "Spill- dagvatten", "", "0,00", "0,00"])
+    ws.append(["1.0", "p.pdf", "S3-R8-75", "", "[1] p", "#8000FF", "7,0 m",
+               "7,0", "m", "Spill- dagvatten", "", "0,00", "0,00"])
+    ws.append(["1.0", "p.pdf", "S3-R8-75 Vertikal", "", "[1] p", "#8000FF",
+               "2", "", "", "Spill- dagvatten", "2,00", "2,80", "5,60"])
+    ws.append(["1.0", "p.pdf", "Markera", "", "[1] p", "#FF0080", "", "", "",
+               "", "", "", "0,00"])
+    wb.save(str(path))
+
+    facit = read_facit(path)
+    assert facit["S3-R8-75"].n_length_rows == 2
+    assert facit["S3-R8-75"].total_length == pytest.approx(12.8)
+    # vertikalrader räknas som vertikaler, inte som punktmarkeringar
+    assert facit["S3-R8-75 Vertikal"].antal_vs == 2
+    assert facit["S3-R8-75 Vertikal"].n_points == 0
+    assert facit["S3-R8-75 Vertikal"].n_vertical_rows == 1
+    assert facit["Markera"].n_points == 1
+
+
+def test_xlsx_med_numeriska_celler(tmp_path):
+    """XLSX kan ge riktiga tal i stället för strängar med decimalkomma."""
+    from openpyxl import Workbook
+
+    path = tmp_path / "facit.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Subject", "Längd", "Lager", "Antal_VS"])
+    ws.append(["KV1-X31-16", 8.7, "Rör tappvatten", None])
+    ws.append(["KV1-X31-16", 8.7, "Rör tappvatten", None])
+    wb.save(str(path))
+
+    facit = read_facit(path)
+    assert facit["KV1-X31-16"].n_length_rows == 2
+    assert facit["KV1-X31-16"].total_length == pytest.approx(17.4)

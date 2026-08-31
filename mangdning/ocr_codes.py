@@ -78,49 +78,75 @@ def render_page(page: fitz.Page, dpi: int):
     return Image.frombytes("L", (pix.width, pix.height), pix.samples)
 
 
-def ocr_page(page: fitz.Page, cfg: Config) -> list[OcrHit]:
+def _ocr_one(tile_img, tx: int, ty: int, psm: int, cfg: Config,
+             px_to_pt: float) -> list[OcrHit]:
+    import pytesseract
+
+    hits: list[OcrHit] = []
+    data = pytesseract.image_to_data(
+        tile_img, lang=cfg.ocr_lang,
+        config=f"--psm {psm}",
+        output_type=pytesseract.Output.DICT,
+    )
+    for j in range(len(data["text"])):
+        text = data["text"][j].strip()
+        if not text:
+            continue
+        try:
+            conf = float(data["conf"][j])
+        except (TypeError, ValueError):
+            continue
+        if conf < cfg.min_conf:
+            continue
+        x = (tx + data["left"][j]) * px_to_pt
+        y = (ty + data["top"][j]) * px_to_pt
+        w = data["width"][j] * px_to_pt
+        h = data["height"][j] * px_to_pt
+        hits.append(OcrHit(text, BBox(x, y, x + w, y + h),
+                           conf, source="ocr", psm=psm))
+    return hits
+
+
+def ocr_page(page: fitz.Page, cfg: Config,
+             progress: "callable | None" = None) -> list[OcrHit]:
     """Kör OCR i överlappande rutor med flera PSM-lägen och slå ihop allt.
 
     ALLA träffar returneras – filtrering mot kod-regexen sker senare, eftersom
     icke-kod-träffar behövs för radparning, legend och skaltext.
+
+    Tesseract körs som separata processer, så rutorna OCR-läses parallellt
+    (cfg.ocr_threads; 0 = antal CPU-kärnor, max 4). progress(klara, totalt)
+    anropas löpande – en A1-ritning i 450 DPI är flera hundra OCR-anrop.
     """
-    import pytesseract
+    import os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     img = render_page(page, cfg.dpi)
     px_to_pt = 72.0 / cfg.dpi
-    hits: list[OcrHit] = []
     tiles = list(iter_tiles(img.width, img.height, cfg.tile_px, cfg.tile_overlap))
-    log.info("OCR: %d rutor à %dpx (%d%% överlapp), PSM %s, %d DPI",
+    jobs = [(tx, ty, tw, th, psm)
+            for (tx, ty, tw, th) in tiles for psm in cfg.psm_modes]
+    n_threads = cfg.ocr_threads or min(os.cpu_count() or 1, 4)
+    log.info("OCR: %d rutor à %dpx (%d%% överlapp), PSM %s, %d DPI, "
+             "%d parallella tesseract-processer => %d anrop",
              len(tiles), cfg.tile_px, int(cfg.tile_overlap * 100),
-             cfg.psm_modes, cfg.dpi)
+             cfg.psm_modes, cfg.dpi, n_threads, len(jobs))
 
-    for i, (tx, ty, tw, th) in enumerate(tiles):
-        tile_img = img.crop((tx, ty, tx + tw, ty + th))
-        for psm in cfg.psm_modes:
-            data = pytesseract.image_to_data(
-                tile_img, lang=cfg.ocr_lang,
-                config=f"--psm {psm}",
-                output_type=pytesseract.Output.DICT,
-            )
-            for j in range(len(data["text"])):
-                text = data["text"][j].strip()
-                if not text:
-                    continue
-                try:
-                    conf = float(data["conf"][j])
-                except (TypeError, ValueError):
-                    continue
-                if conf < cfg.min_conf:
-                    continue
-                x = (tx + data["left"][j]) * px_to_pt
-                y = (ty + data["top"][j]) * px_to_pt
-                w = data["width"][j] * px_to_pt
-                h = data["height"][j] * px_to_pt
-                hits.append(OcrHit(text, BBox(x, y, x + w, y + h),
-                                   conf, source="ocr", psm=psm))
-        if (i + 1) % 20 == 0:
-            log.info("OCR: %d/%d rutor klara (%d träffar hittills)",
-                     i + 1, len(tiles), len(hits))
+    hits: list[OcrHit] = []
+    done = 0
+    with ThreadPoolExecutor(max_workers=n_threads) as pool:
+        futures = [
+            pool.submit(_ocr_one, img.crop((tx, ty, tx + tw, ty + th)),
+                        tx, ty, psm, cfg, px_to_pt)
+            for (tx, ty, tw, th, psm) in jobs]
+        for future in as_completed(futures):
+            hits.extend(future.result())
+            done += 1
+            if progress is not None:
+                progress(done, len(jobs))
+            if done % 40 == 0:
+                log.info("OCR: %d/%d anrop klara (%d träffar hittills)",
+                         done, len(jobs), len(hits))
     log.info("OCR: totalt %d råa träffar", len(hits))
     return hits
 
@@ -293,10 +319,12 @@ def extract_codes(all_hits: list[OcrHit], cfg: Config) -> list[CodeHit]:
     return codes
 
 
-def collect_hits(page: fitz.Page, cfg: Config) -> tuple[list[OcrHit], TextLayerInfo]:
+def collect_hits(page: fitz.Page, cfg: Config,
+                 progress: "callable | None" = None
+                 ) -> tuple[list[OcrHit], TextLayerInfo]:
     """Hela Del A-insamlingen: PDF-textord + OCR vid behov."""
     info = inspect_text_layer(page, cfg)
     hits = native_word_hits(page)
     if info.use_ocr:
-        hits.extend(ocr_page(page, cfg))
+        hits.extend(ocr_page(page, cfg, progress=progress))
     return hits, info
