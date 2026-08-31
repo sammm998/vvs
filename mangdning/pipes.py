@@ -125,52 +125,69 @@ def format_histogram(data: DrawingData) -> str:
     return "\n".join(lines)
 
 
-def select_pipe_cluster(data: DrawingData, cfg: Config
-                        ) -> tuple[float, tuple[float, float, float] | None]:
-    """Identifiera vilket bredd/färg-kluster som är rörlinjer.
+def select_pipe_clusters(data: DrawingData, cfg: Config
+                         ) -> list[tuple[float, tuple[float, float, float] | None]]:
+    """Identifiera vilka bredd/färg-kluster som är rörlinjer.
 
-    Inte hårdkodat: om cfg.pipe_width är satt används den, annars väljs
-    dynamiskt. Heuristik: det vanligaste klustret är typiskt tunna streck
-    (textkonturer/måttlinjer); det näst vanligaste distinkta klustret som är
-    tydligt bredare brukar vara rörlinjerna. Loggas alltid så användaren kan
-    verifiera/kalibrera med --calibrate eller --pipe-width.
+    Inte hårdkodat. Är cfg.pipe_widths (eller cfg.pipe_width) satt används
+    dessa. Annars: rör ritas med de grövsta pennorna medan text-konturer,
+    skraffering, måttlinjer och byggnadsstommen är tunnare – och ett och
+    samma system-set kan rita olika system med olika penna (i vår testfil
+    spillvatten 2,04 pt och tappvatten 1,44 pt). Därför väljs ALLA
+    signifikanta kluster som är minst pipe_width_ratio av det bredaste.
+
+    Loggas alltid, så valet kan verifieras med --calibrate och överstyras
+    med --pipe-width.
     """
-    if cfg.pipe_width is not None:
-        color = cfg.pipe_color
-        if color is None and data.width_color:
-            best = None
-            for width, colors in data.width_color.items():
-                if abs(width - cfg.pipe_width) <= cfg.pipe_width * cfg.pipe_width_tol:
-                    for c, n in colors.items():
-                        if best is None or n > best[1]:
-                            best = (c, n)
-            color = best[0] if best else None
-        log.info("Rörkluster (konfigurerat): bredd=%.2f pt, färg=%s",
-                 cfg.pipe_width, color)
-        return cfg.pipe_width, color
+    explicit = cfg.pipe_widths or (
+        [cfg.pipe_width] if cfg.pipe_width is not None else None)
+    if explicit:
+        out = []
+        for width in explicit:
+            color = cfg.pipe_color or _dominant_color(data, width, cfg)
+            out.append((width, color))
+        log.info("Rörkluster (konfigurerat): %s",
+                 ", ".join(f"{w:.2f} pt {c}" for w, c in out))
+        return out
 
     common = data.width_histogram.most_common()
     if not common:
         raise ValueError("Inga stroke-segment i PDF:en – går inte att "
                          "identifiera rörlinjer.")
     total = sum(data.width_histogram.values())
-    # Rörledningar ritas med den grövsta pennan; text-konturer, skraffering,
-    # måttlinjer och ledartrådar är alla tunnare. Välj därför det BREDASTE
-    # klustret som är signifikant (nog många segment för att vara ett riktigt
-    # lager, inte enstaka specialobjekt). Bredd 0 = hårfin linje, aldrig rör.
     significant = [
         (w, n) for w, n in common
         if w > 0 and n >= max(cfg.min_cluster_count, total * cfg.min_cluster_frac)
     ]
-    if significant:
-        width = max(significant, key=lambda item: item[0])[0]
-    else:
+    if not significant:
         width = max((w for w, _ in common if w > 0), default=common[0][0])
-    color = data.width_color[width].most_common(1)[0][0]
-    log.info("Rörkluster (auto): bredd=%.2f pt, färg=%s "
+        return [(width, data.width_color[width].most_common(1)[0][0])]
+
+    widest = max(w for w, _ in significant)
+    chosen = sorted((w for w, _ in significant
+                     if w >= widest * cfg.pipe_width_ratio), reverse=True)
+    out = [(w, data.width_color[w].most_common(1)[0][0]) for w in chosen]
+    log.info("Rörkluster (auto): %s "
              "(verifiera med --calibrate, överstyr med --pipe-width)",
-             width, color)
-    return width, color
+             ", ".join(f"{w:.2f} pt {c} [{data.width_histogram[w]} seg]"
+                       for w, c in out))
+    return out
+
+
+def _dominant_color(data: DrawingData, width: float, cfg: Config):
+    best = None
+    for w, colors in data.width_color.items():
+        if abs(w - width) <= width * cfg.pipe_width_tol:
+            for c, n in colors.items():
+                if best is None or n > best[1]:
+                    best = (c, n)
+    return best[0] if best else None
+
+
+def select_pipe_cluster(data: DrawingData, cfg: Config
+                        ) -> tuple[float, tuple[float, float, float] | None]:
+    """Bakåtkompatibelt: det bredaste (primära) rörklustret."""
+    return select_pipe_clusters(data, cfg)[0]
 
 
 def _color_close(a, b, tol: float) -> bool:
@@ -179,16 +196,26 @@ def _color_close(a, b, tol: float) -> bool:
     return all(abs(x - y) <= tol for x, y in zip(a, b))
 
 
-def filter_pipe_segments(data: DrawingData, width: float,
-                         color: tuple[float, float, float] | None,
-                         cfg: Config) -> list[Segment]:
-    """Behåll segment i rätt bredd/färg-kluster, utanför exkluderingszoner."""
+def filter_pipe_segments(data: DrawingData, width, color, cfg: Config
+                         ) -> list[Segment]:
+    """Behåll segment i något av rörklustren, utanför exkluderingszoner.
+
+    width/color kan vara ett enskilt kluster eller en lista av (bredd, färg).
+    """
+    if isinstance(width, list):
+        clusters = width
+    else:
+        clusters = [(width, color)]
     zones = cfg.exclude_bboxes()
     out = []
     for seg in data.segments:
-        if abs(seg.width - width) > width * cfg.pipe_width_tol:
-            continue
-        if color is not None and not _color_close(seg.color, color, cfg.color_tol):
+        for w, c in clusters:
+            if abs(seg.width - w) > w * cfg.pipe_width_tol:
+                continue
+            if c is not None and not _color_close(seg.color, c, cfg.color_tol):
+                continue
+            break
+        else:
             continue
         mid = ((seg.p1[0] + seg.p2[0]) / 2.0, (seg.p1[1] + seg.p2[1]) / 2.0)
         if any(z.contains(mid) for z in zones):
@@ -269,14 +296,15 @@ def merge_collinear_runs(segments: list[Segment], max_gap_pt: float,
         if dx < 0 or (dx == 0.0 and dy < 0):
             dx, dy = -dx, -dy
         spans = []
-        for seg in group:
+        for i, seg in enumerate(group):
             t1 = seg.p1[0] * dx + seg.p1[1] * dy
             t2 = seg.p2[0] * dx + seg.p2[1] * dy
-            spans.append((min(t1, t2), max(t1, t2), seg))
+            # index som tie-break: Segment saknar ordning
+            spans.append((min(t1, t2), max(t1, t2), i, seg))
         spans.sort()
 
-        run_start, run_end, first = spans[0]
-        for start, end, seg in spans[1:]:
+        run_start, run_end, _i, first = spans[0]
+        for start, end, _i, seg in spans[1:]:
             if start - run_end <= max_gap_pt:     # samma streckade linje
                 run_end = max(run_end, end)
             else:
@@ -486,8 +514,9 @@ def detect_pipes(page: fitz.Page, cfg: Config
     log.info("Vektordata: %d segment, %d småsymboler",
              len(data.segments), len(data.small_symbols))
     log.debug("%s", format_histogram(data))
-    width, color = select_pipe_cluster(data, cfg)
-    pipe_segments = filter_pipe_segments(data, width, color, cfg)
+    clusters = select_pipe_clusters(data, cfg)
+    width, color = clusters[0]
+    pipe_segments = filter_pipe_segments(data, clusters, None, cfg)
     log.info("Rörsegment i valt kluster: %d", len(pipe_segments))
     chains = build_chains(pipe_segments, cfg)
     flag_frame_chains(chains, page.rect, cfg)

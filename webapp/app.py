@@ -79,15 +79,37 @@ def _run_job(job_id: str, cfg: Config, facit_path: Path | None) -> None:
                 "koder_csv": outputs.code_table_csv,
                 "rapport_txt": outputs.report_txt,
             }
+            if outputs.preview_png:
+                files["forhandsvisning_png"] = outputs.preview_png
             if outputs.validation_txt:
                 files["validering_txt"] = outputs.validation_txt
             job["files"] = {key: p.name for key, p in files.items()}
             job["summary"] = outputs.summary
+            job["rows"] = _table_rows(outputs.quantities_xlsx)
             job["status"] = "done"
         except Exception as exc:
             log.exception("Jobb %s misslyckades", job_id)
             job["status"] = "error"
             job["error"] = str(exc)
+
+
+def _table_rows(xlsx_path: Path, limit: int = 3000) -> list[dict]:
+    """Mängdraderna som JSON, så resultatsidan kan visa uträkningen direkt
+    i webbläsaren i stället för att kräva nedladdning av Excel-filen."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(xlsx_path), data_only=True)
+    ws = wb["Mängdförteckning"]
+    rows = []
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        rows.append({
+            "subject": r[2], "color": r[5], "langd": r[7], "lager": r[9],
+            "antal_vs": r[10], "total_vh": r[12],
+            "antal": r[18], "kalla": r[19],
+        })
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -150,7 +172,7 @@ async def create_job(
     JOBS[job_id] = {
         "status": "queued", "stage": "Väntar på ledig plats i kön",
         "created": time.time(), "input_name": input_name,
-        "files": {}, "summary": None, "error": None,
+        "files": {}, "summary": None, "error": None, "rows": [],
     }
     threading.Thread(target=_run_job, args=(job_id, cfg, facit_path),
                      daemon=True).start()
@@ -168,6 +190,7 @@ def job_status(job_id: str):
         "error": job.get("error"),
         "files": job["files"],
         "summary": job["summary"],
+        "rows": job.get("rows") or [],
     }
 
 
@@ -181,10 +204,12 @@ def job_file(job_id: str, name: str):
     path = JOBS_DIR / job_id / "out" / name
     if not path.exists():
         raise HTTPException(404, "Filen saknas på disk")
-    media = {"pdf": "application/pdf", "csv": "text/csv",
+    media = {"pdf": "application/pdf", "csv": "text/csv", "png": "image/png",
              "txt": "text/plain; charset=utf-8",
              "xlsx": ("application/vnd.openxmlformats-officedocument"
                       ".spreadsheetml.sheet")}.get(path.suffix.lstrip("."))
+    if path.suffix.lower() == ".png":
+        return FileResponse(path, media_type="image/png")
     return FileResponse(path, media_type=media, filename=name)
 
 

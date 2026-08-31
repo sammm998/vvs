@@ -28,9 +28,46 @@ log = logging.getLogger(__name__)
 MAX_CHAIN_LABELS = 400
 
 
+def _chain_color(chain: PipeChain, codes_by_id: dict) -> tuple:
+    if chain.linked_codes:
+        code = codes_by_id.get(chain.linked_codes[0])
+        if code:
+            return hex_to_rgb01(color_for_code(code.full_code))
+    return (0.0, 0.0, 1.0)   # blå = okopplad rörsträcka
+
+
+def _chain_label(chain: PipeChain, codes_by_id: dict, scale) -> str:
+    """Texten som skrivs på rörsträckan: kod och uträknad längd."""
+    parts = []
+    if chain.linked_codes:
+        code = codes_by_id.get(chain.linked_codes[0])
+        if code:
+            parts.append(code.full_code)
+            if code.count > 1:
+                parts.append(f"x{code.count}")
+    if scale is not None and scale.known:
+        meters = scale.to_meters(chain.length_pt)
+        if meters is not None:
+            n = meters * (codes_by_id[chain.linked_codes[0]].count
+                          if chain.linked_codes
+                          and chain.linked_codes[0] in codes_by_id else 1)
+            parts.append(f"{n:.1f}".replace(".", ",") + " m")
+    else:
+        parts.append(f"{chain.length_pt:.0f} pt")
+    return " ".join(parts)
+
+
+def _label_anchor(chain: PipeChain):
+    """Placera etiketten vid sträckans mittpunkt längs själva röret, inte i
+    bounding-boxens mitt (som kan hamna helt utanför en L-formad sträcka)."""
+    longest = max(chain.segments, key=lambda s: s.length)
+    return ((longest.p1[0] + longest.p2[0]) / 2.0,
+            (longest.p1[1] + longest.p2[1]) / 2.0)
+
+
 def annotate_pdf(input_pdf: str | Path, output_pdf: str | Path,
                  codes: list[CodeHit], chains: list[PipeChain],
-                 leaders: list[Leader], cfg: Config) -> None:
+                 leaders: list[Leader], cfg: Config, scale=None) -> None:
     doc = fitz.open(str(input_pdf))
     page = doc[cfg.page]
     codes_by_id = {c.id: c for c in codes}
@@ -47,13 +84,8 @@ def annotate_pdf(input_pdf: str | Path, output_pdf: str | Path,
         # Gruppera kedjor per färg => en finish per färg, ETT commit totalt
         by_color: dict[tuple[float, float, float], list[PipeChain]] = {}
         for chain in active_chains:
-            if chain.linked_codes:
-                code = codes_by_id.get(chain.linked_codes[0])
-                color = (hex_to_rgb01(color_for_code(code.full_code))
-                         if code else (0.0, 0.0, 1.0))
-            else:
-                color = (0.0, 0.0, 1.0)  # blå = okopplad rörsträcka
-            by_color.setdefault(color, []).append(chain)
+            by_color.setdefault(_chain_color(chain, codes_by_id),
+                                []).append(chain)
 
         shape = page.new_shape()
         for color, group in by_color.items():
@@ -63,16 +95,30 @@ def annotate_pdf(input_pdf: str | Path, output_pdf: str | Path,
             shape.finish(color=color, width=2.5, stroke_opacity=0.6, oc=oc)
         shape.commit(overlay=True)
 
-        # sträck-id för spårbarhet mot mängdförteckningens "källa"-kolumn
+        # Uträkningen skrivs ut på varje mängdad rörsträcka: kod och längd,
+        # så ritningen går att läsa av direkt utan att öppna Excel-filen.
         if len(active_chains) <= MAX_CHAIN_LABELS:
-            tw = fitz.TextWriter(page.rect)
             for chain in active_chains:
-                cx, cy = chain.bbox.center
-                tw.append(fitz.Point(cx, cy), f"#{chain.id}", fontsize=5)
-            tw.write_text(page, color=(0.1, 0.1, 0.5), oc=oc)
+                if (scale is not None and scale.known
+                        and (scale.to_meters(chain.length_pt) or 0)
+                        < cfg.label_min_m):
+                    continue   # för kort stump – skulle skräpa ner ritningen
+                label = _chain_label(chain, codes_by_id, scale)
+                if not label:
+                    continue
+                cx, cy = _label_anchor(chain)
+                color = _chain_color(chain, codes_by_id)
+                # vit platta bakom texten så den syns mot ritningen
+                w = len(label) * 3.4 + 4
+                page.draw_rect(fitz.Rect(cx - 2, cy - 7.5, cx + w, cy + 1.5),
+                               color=color, fill=(1, 1, 1), width=0.4,
+                               fill_opacity=0.85, oc=oc)
+                page.insert_text(fitz.Point(cx, cy), label,
+                                 fontsize=5.5, color=color, oc=oc)
         else:
-            log.info("Hoppar över sträck-id-etiketter (%d kedjor > %d)",
-                     len(active_chains), MAX_CHAIN_LABELS)
+            log.info("Hoppar över längdetiketter (%d sträckor > %d) – "
+                     "de skulle bli oläsbart täta", len(active_chains),
+                     MAX_CHAIN_LABELS)
 
     if "codes" in cfg.layers:
         oc = make_ocg("Koder")

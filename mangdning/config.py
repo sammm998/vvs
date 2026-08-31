@@ -66,6 +66,11 @@ class Config:
 
     # --- Del B: rördetektering ---
     pipe_width: float | None = None       # None = auto via histogram
+    # En ritning kan rita olika system med olika penna (i vår testfil
+    # spillvatten på 2,04 pt och tappvatten på 1,44 pt). Alla signifikanta
+    # kluster som är minst så här stor andel av det bredaste räknas som rör.
+    pipe_widths: list[float] | None = None   # None = auto
+    pipe_width_ratio: float = 0.6
     pipe_width_tol: float = 0.15          # relativ tolerans mot klustret
     # Ett bredd-kluster räknas som ett riktigt ritlager (och inte enstaka
     # specialobjekt) om det har minst så här många segment – båda villkoren
@@ -83,6 +88,9 @@ class Config:
     bezier_steps: int = 4                 # utplattning av rörböjar (kurvor)
     frame_len_pt: float = 700.0           # längre raka ensamma linjer = ram/rutnät
     min_chain_len_pt: float = 3.0         # kortare kedjor ignoreras (brus)
+    # Etiketter under denna längd ritas inte ut – korta stumpar skulle annars
+    # täcka ritningen med "0,2 m"-rutor. Raderna finns kvar i förteckningen.
+    label_min_m: float = 1.0
 
     # --- Del C: ledartrådar ---
     leader_max_width_ratio: float = 0.8   # ledartråd smalare än rörbredd * ratio

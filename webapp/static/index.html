@@ -79,6 +79,31 @@
     padding: 14px; overflow-x: auto; font-size: 12.5px; margin-top: 14px;
   }
   footer { color: var(--muted); font-size: 13px; margin-top: 28px; }
+  h3 { margin: 24px 0 8px; font-size: 16px; }
+  .viewer {
+    border: 1px solid var(--border); border-radius: 8px; overflow: auto;
+    background: #fff; max-height: 70vh; cursor: grab;
+  }
+  .viewer.dragging { cursor: grabbing; }
+  .viewer img { display: block; transform-origin: 0 0; max-width: none; }
+  .zoombar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .zbtn {
+    padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: #fff; color: var(--ink); font: inherit; cursor: pointer;
+    text-decoration: none;
+  }
+  .zbtn:hover { border-color: var(--accent); color: var(--accent); }
+  #zoom-label { color: var(--muted); font-size: 13px; min-width: 74px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: #f7f9fb; font-weight: 600; position: sticky; top: 0; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .swatch {
+    display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+    margin-right: 6px; vertical-align: baseline;
+  }
+  tr.total td { font-weight: 700; background: #f7f9fb; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -160,6 +185,28 @@
     <h2 style="margin-top:0">Resultat</h2>
     <div class="stats" id="stats"></div>
     <div id="scale-line"></div>
+
+    <h3>Markerad ritning</h3>
+    <p class="hint" style="margin-top:-6px">Varje mängdad rörsträcka är
+      färgad efter sin kod och har sin uträknade längd utsatt. Röda rutor =
+      koder utan rörkoppling. Klicka för att zooma, dra för att panorera.</p>
+    <div class="viewer" id="viewer">
+      <img id="preview" alt="Markerad ritning">
+    </div>
+    <div class="zoombar">
+      <button type="button" class="zbtn" id="zoom-out">−</button>
+      <span id="zoom-label">Anpassad</span>
+      <button type="button" class="zbtn" id="zoom-in">+</button>
+      <button type="button" class="zbtn" id="zoom-fit">Passa in</button>
+      <a id="open-pdf" class="zbtn" target="_blank" rel="noopener">Öppna
+        markerad PDF</a>
+    </div>
+
+    <h3>Mängdning per rörsträcka</h3>
+    <div class="tablewrap"><table id="qty"></table></div>
+    <p class="hint" id="qty-note"></p>
+
+    <h3>Filer</h3>
     <div class="files" id="files"></div>
     <div class="warnings" id="warnings" hidden>
       <strong>Varningar och osäkerhetsflaggor</strong>
@@ -312,6 +359,9 @@ function showResult(jobId, job) {
       .catch(() => {});
   }
 
+  showPreview(jobId, job);
+  showTable(job.rows || []);
+
   const warnings = (s.varningar || []).concat(s.antal_kontroller || []);
   if (warnings.length) {
     $("warnings").hidden = false;
@@ -319,6 +369,87 @@ function showResult(jobId, job) {
       warnings.map(w => `<li>${escapeHtml(w)}</li>`).join("");
   }
   $("again").onclick = () => location.reload();
+}
+
+let zoom = 1, fitZoom = 1;
+
+function showPreview(jobId, job) {
+  const name = job.files.forhandsvisning_png;
+  const img = $("preview");
+  if (!name) { $("viewer").hidden = true; return; }
+  img.src = `/api/jobs/${jobId}/files/${encodeURIComponent(name)}`;
+  img.onload = () => {
+    fitZoom = $("viewer").clientWidth / img.naturalWidth;
+    setZoom(fitZoom);
+  };
+  if (job.files.markerad_pdf) {
+    $("open-pdf").href =
+      `/api/jobs/${jobId}/files/${encodeURIComponent(job.files.markerad_pdf)}`;
+  }
+  $("zoom-in").onclick = () => setZoom(zoom * 1.4);
+  $("zoom-out").onclick = () => setZoom(zoom / 1.4);
+  $("zoom-fit").onclick = () => setZoom(fitZoom);
+  enableDragPan($("viewer"));
+}
+
+function setZoom(z) {
+  zoom = Math.max(0.05, Math.min(z, 8));
+  const img = $("preview");
+  img.style.transform = `scale(${zoom})`;
+  img.style.width = img.naturalWidth + "px";
+  $("viewer").style.height = "70vh";
+  // behåll rullningsytan i takt med skalningen
+  img.parentElement.scrollLeft = img.parentElement.scrollLeft;
+  $("zoom-label").textContent =
+    Math.abs(zoom - fitZoom) < 1e-6 ? "Anpassad" : Math.round(zoom * 100) + " %";
+  const holder = img.parentElement;
+  holder.scrollTo({ left: holder.scrollLeft, top: holder.scrollTop });
+  img.style.marginBottom =
+    (img.naturalHeight * zoom - img.naturalHeight) + "px";
+  img.style.marginRight =
+    (img.naturalWidth * zoom - img.naturalWidth) + "px";
+}
+
+function enableDragPan(el) {
+  let down = false, sx = 0, sy = 0, sl = 0, st = 0;
+  el.addEventListener("mousedown", (e) => {
+    down = true; sx = e.clientX; sy = e.clientY;
+    sl = el.scrollLeft; st = el.scrollTop;
+    el.classList.add("dragging"); e.preventDefault();
+  });
+  window.addEventListener("mouseup", () => { down = false; el.classList.remove("dragging"); });
+  window.addEventListener("mousemove", (e) => {
+    if (!down) return;
+    el.scrollLeft = sl - (e.clientX - sx);
+    el.scrollTop = st - (e.clientY - sy);
+  });
+}
+
+function showTable(rows) {
+  const table = $("qty");
+  if (!rows.length) { table.innerHTML = "<tr><td>Inga rader</td></tr>"; return; }
+  const pipes = rows.filter(r => r.langd !== null && r.langd !== "");
+  const points = rows.filter(r => r.antal !== null && r.antal !== "");
+  const verts = rows.filter(r => r.antal_vs !== null && r.antal_vs !== "");
+  const head = `<tr><th>Kod</th><th>System</th><th>Längd (m)</th>
+                <th>Antal (st)</th><th>Vertikaler</th><th>Källa</th></tr>`;
+  const body = rows.map(r => `<tr>
+      <td><span class="swatch" style="background:${escapeHtml(r.color || "#888")}"></span>${escapeHtml(r.subject)}</td>
+      <td>${escapeHtml(r.lager || "")}</td>
+      <td class="num">${r.langd ?? ""}</td>
+      <td class="num">${r.antal ?? ""}</td>
+      <td class="num">${r.antal_vs ? r.antal_vs + " st = " + (r.total_vh ?? "") + " m" : ""}</td>
+      <td>${escapeHtml(r.kalla || "")}</td></tr>`).join("");
+  const total = pipes.reduce((a, r) => a + Number(r.langd || 0), 0);
+  const foot = `<tr class="total"><td>TOTALT</td><td></td>
+      <td class="num">${total.toFixed(1).replace(".", ",")}</td>
+      <td class="num">${points.reduce((a, r) => a + Number(r.antal || 0), 0)}</td>
+      <td class="num">${verts.reduce((a, r) => a + Number(r.antal_vs || 0), 0)} st</td>
+      <td></td></tr>`;
+  table.innerHTML = head + body + foot;
+  $("qty-note").textContent =
+    `${pipes.length} rörsträckor, ${points.length} punktkomponenter, ` +
+    `${verts.length} vertikalposter – samma rader som Excel-filen.`;
 }
 
 function escapeHtml(s) {

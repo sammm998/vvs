@@ -38,6 +38,21 @@ STAGES = [
 ]
 
 
+def render_preview(pdf_path: Path, png_path: Path, dpi: int = 160) -> Path:
+    """Rendera den markerade ritningen till en PNG för visning i webbläsaren.
+
+    Poängen med verktyget är att kunna SE ritningen med sina markeringar och
+    uträkningar – inte att behöva öppna nedladdade filer.
+    """
+    doc = fitz.open(str(pdf_path))
+    try:
+        doc[0].get_pixmap(dpi=dpi).save(str(png_path))
+    finally:
+        doc.close()
+    log.info("Förhandsvisning sparad: %s", png_path)
+    return png_path
+
+
 @dataclass
 class PipelineOutputs:
     annotated_pdf: Path
@@ -45,6 +60,7 @@ class PipelineOutputs:
     quantities_xlsx: Path
     quantities_csv: Path
     report_txt: Path
+    preview_png: Path | None = None
     validation_txt: Path | None = None
     validation_text: str | None = None
     summary: dict = field(default_factory=dict)
@@ -125,7 +141,9 @@ def run_pipeline(input_pdf: str | Path, cfg: Config, out_dir: str | Path,
         )
         stage("output", "Skriver markerad PDF")
         annotate_pdf(input_pdf, outputs.annotated_pdf, codes, chains,
-                     leaders, cfg)
+                     leaders, cfg, scale=scale)
+        outputs.preview_png = render_preview(outputs.annotated_pdf,
+                                             out_dir / f"{stem}_forhandsvisning.png")
         stage("output", "Skriver mängdförteckning och rapport")
         write_code_table(codes, outputs.code_table_csv)
         write_quantities_xlsx(result, outputs.quantities_xlsx)
