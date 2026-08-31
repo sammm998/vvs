@@ -78,6 +78,13 @@ def render_page(page: fitz.Page, dpi: int):
     return Image.frombytes("L", (pix.width, pix.height), pix.samples)
 
 
+def _ink_fraction(tile_img) -> float:
+    """Andel mörka pixlar i rutan – mått på om där finns något att läsa."""
+    small = tile_img.resize((96, 96))
+    dark = sum(1 for px in small.getdata() if px < 200)
+    return dark / (96 * 96)
+
+
 def _ocr_one(tile_img, tx: int, ty: int, psm: int, cfg: Config,
              px_to_pt: float) -> list[OcrHit]:
     import pytesseract
@@ -124,8 +131,23 @@ def ocr_page(page: fitz.Page, cfg: Config,
     img = render_page(page, cfg.dpi)
     px_to_pt = 72.0 / cfg.dpi
     tiles = list(iter_tiles(img.width, img.height, cfg.tile_px, cfg.tile_overlap))
+
+    # En A1-ritning är till stor del tom yta. Tesseract är långsamt även på
+    # en blank ruta, så rutor utan nämnvärt bläck hoppas över helt – det är
+    # skillnaden mellan minuter och timmar på ett stort format.
+    crops = {}
+    skipped = 0
+    for (tx, ty, tw, th) in tiles:
+        crop = img.crop((tx, ty, tx + tw, ty + th))
+        if _ink_fraction(crop) < cfg.min_tile_ink:
+            skipped += 1
+            continue
+        crops[(tx, ty, tw, th)] = crop
+    if skipped:
+        log.info("OCR: hoppar över %d av %d rutor utan text", skipped, len(tiles))
+
     jobs = [(tx, ty, tw, th, psm)
-            for (tx, ty, tw, th) in tiles for psm in cfg.psm_modes]
+            for (tx, ty, tw, th) in crops for psm in cfg.psm_modes]
     n_threads = cfg.ocr_threads or min(os.cpu_count() or 1, 4)
     log.info("OCR: %d rutor à %dpx (%d%% överlapp), PSM %s, %d DPI, "
              "%d parallella tesseract-processer => %d anrop",
@@ -136,7 +158,7 @@ def ocr_page(page: fitz.Page, cfg: Config,
     done = 0
     with ThreadPoolExecutor(max_workers=n_threads) as pool:
         futures = [
-            pool.submit(_ocr_one, img.crop((tx, ty, tx + tw, ty + th)),
+            pool.submit(_ocr_one, crops[(tx, ty, tw, th)],
                         tx, ty, psm, cfg, px_to_pt)
             for (tx, ty, tw, th, psm) in jobs]
         for future in as_completed(futures):

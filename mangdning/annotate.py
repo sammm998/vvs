@@ -117,28 +117,25 @@ def annotate_pdf(input_pdf: str | Path, output_pdf: str | Path,
 
     if "codes" in cfg.layers:
         oc = make_ocg("Koder")
-        shape = page.new_shape()
-        n_unlinked = 0
+        # Varje beteckning färgläggs i sin kods färg, som i en professionell
+        # mängdning – en markering per förekomst. Fyllningen är genomskinlig
+        # så att texten under fortfarande går att läsa.
+        by_color: dict[tuple, list[CodeHit]] = {}
         for code in codes:
             if code.excluded:
                 continue
-            r = code.bbox
-            rect = fitz.Rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1)
-            if code.linked_chain is not None:
-                shape.draw_rect(rect)
-                shape.finish(color=hex_to_rgb01(color_for_code(code.full_code)),
-                             width=0.8, oc=oc)
-            else:
-                n_unlinked += 1
-        # röd = ej kopplad till rör – verifiera manuellt (en finish för alla)
-        if n_unlinked:
-            for code in codes:
-                if code.excluded or code.linked_chain is not None:
-                    continue
+            color = (hex_to_rgb01(color_for_code(code.full_code))
+                     if code.linked_chain is not None else (1.0, 0.0, 0.0))
+            by_color.setdefault(color, []).append(code)
+
+        shape = page.new_shape()
+        for color, group in by_color.items():
+            for code in group:
                 r = code.bbox
-                shape.draw_rect(
-                    fitz.Rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1))
-            shape.finish(color=(1.0, 0.0, 0.0), width=0.8, oc=oc)
+                shape.draw_rect(fitz.Rect(r.x0 - 1.5, r.y0 - 1,
+                                          r.x1 + 1.5, r.y1 + 1))
+            shape.finish(color=color, fill=color, width=0.5,
+                         fill_opacity=0.35, oc=oc)
         shape.commit(overlay=True)
 
     if "links" in cfg.layers:

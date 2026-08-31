@@ -63,6 +63,9 @@ class Config:
     skip_ocr: bool = False
     native_word_threshold: int = 100  # fler riktiga ord än så => PDF-text räcker
     ocr_threads: int = 0            # parallella tesseract-processer; 0 = auto
+    # Rutor med mindre andel mörka pixlar än så här saknar text och
+    # OCR-läses inte alls (tom ritningsyta på stora format).
+    min_tile_ink: float = 0.002
 
     # --- Del B: rördetektering ---
     pipe_width: float | None = None       # None = auto via histogram

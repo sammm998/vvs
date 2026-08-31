@@ -156,3 +156,19 @@ def test_exkluderingszon():
     codes = extract_codes([inside, outside], cfg)
     assert sum(1 for c in codes if c.excluded) == 1
     assert sum(1 for c in codes if not c.excluded) == 1
+
+
+def test_tomma_rutor_hoppas_over():
+    """Stora format är mest tom yta; rutor utan bläck ska inte OCR-läsas."""
+    from PIL import Image
+
+    from mangdning.ocr_codes import _ink_fraction
+
+    blank = Image.new("L", (300, 300), 255)
+    assert _ink_fraction(blank) == 0.0
+
+    with_text = Image.new("L", (300, 300), 255)
+    for x in range(100, 200):
+        for y in range(140, 170):
+            with_text.putpixel((x, y), 0)
+    assert _ink_fraction(with_text) > Config().min_tile_ink
