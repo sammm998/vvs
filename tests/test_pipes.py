@@ -195,3 +195,41 @@ def test_sammanslagning_avstangd_med_noll():
     from mangdning.pipes import merge_collinear_runs
     segments = [seg(i * 10, 0, i * 10 + 6, 0) for i in range(5)]
     assert len(merge_collinear_runs(segments, max_gap_pt=0.0)) == 5
+
+
+def test_forgreningar_delar_kedjan_i_grenar():
+    """Ett T-format nät ska bli tre sträckor (som i en manuell mängdning),
+    inte en enda lång kedja rakt genom korsningen."""
+    segments = [
+        seg(0, 0, 100, 0),      # vänster gren
+        seg(100, 0, 200, 0),    # höger gren (kollinjär fortsättning!)
+        seg(100, 0, 100, 80),   # avstick nedåt
+    ]
+    cfg = Config()
+    cfg.dash_gap_pt = 0.0   # ingen streck-sammanslagning i testet
+    chains = build_chains(segments, cfg)
+    assert len(chains) == 3
+    assert sorted(round(c.length_pt) for c in chains) == [80, 100, 100]
+
+
+def test_avstick_mitt_pa_ett_segment_klipper_det():
+    """Avsticket ansluter mitt på ett långt segment – segmentet ska klippas
+    vid anslutningen så att grenarna blir 100+100+80, inte 200+80."""
+    segments = [
+        seg(0, 0, 200, 0),      # ett obrutet segment
+        seg(100, 0, 100, 80),   # avstick mitt på
+    ]
+    cfg = Config()
+    cfg.dash_gap_pt = 0.0
+    chains = build_chains(segments, cfg)
+    assert len(chains) == 3
+    assert sorted(round(c.length_pt) for c in chains) == [80, 100, 100]
+
+
+def test_rak_ledning_utan_avstick_delas_inte():
+    segments = [seg(0, 0, 100, 0), seg(100, 0, 200, 0), seg(200, 0, 200, 50)]
+    cfg = Config()
+    cfg.dash_gap_pt = 0.0
+    chains = build_chains(segments, cfg)
+    assert len(chains) == 1   # hörn är ingen förgrening
+    assert chains[0].length_pt == pytest.approx(250.0)

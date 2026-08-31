@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 import fitz
 
 from .config import Config
-from .models import BBox, PipeChain, Point, Segment, dist
+from .models import (BBox, PipeChain, Point, Segment, dist,
+                     point_segment_distance)
 
 log = logging.getLogger(__name__)
 
@@ -486,30 +487,168 @@ def _chain_endpoints(segments: list[Segment], tol_pt: float) -> list[Point]:
     return [e[0] for entries in grid.values() for e in entries if e[1] == 1]
 
 
-def build_chains(segments: list[Segment], cfg: Config) -> list[PipeChain]:
+def _split_at_contacts(segments: list[Segment], tol: float) -> list[Segment]:
+    """Klipp segment där andra segments ändpunkter ansluter mitt på dem.
+
+    Ett avstick ritas ofta mot mitten av ett längre segment; utan klippning
+    ser ändpunktskedjnigen aldrig anslutningen, och utan brytpunkten kan
+    grenen inte delas vid avsticket."""
+    if len(segments) <= 1:
+        return list(segments)
+    cell = max(tol, 0.5)
+    grid: dict[tuple[int, int], list[Point]] = {}
+    for seg in segments:
+        for p in (seg.p1, seg.p2):
+            grid.setdefault((int(p[0] // cell), int(p[1] // cell)), []).append(p)
+
+    pieces: list[Segment] = []
+    for seg in segments:
+        length = seg.length
+        if length <= 2 * tol:
+            pieces.append(seg)
+            continue
+        dx = (seg.p2[0] - seg.p1[0]) / length
+        dy = (seg.p2[1] - seg.p1[1]) / length
+        x0 = min(seg.p1[0], seg.p2[0]) - tol
+        x1 = max(seg.p1[0], seg.p2[0]) + tol
+        y0 = min(seg.p1[1], seg.p2[1]) - tol
+        y1 = max(seg.p1[1], seg.p2[1]) + tol
+        cuts: list[float] = []
+        for gx in range(int(x0 // cell), int(x1 // cell) + 1):
+            for gy in range(int(y0 // cell), int(y1 // cell) + 1):
+                for p in grid.get((gx, gy), []):
+                    t = (p[0] - seg.p1[0]) * dx + (p[1] - seg.p1[1]) * dy
+                    if not (tol < t < length - tol):
+                        continue
+                    if point_segment_distance(p, seg.p1, seg.p2) <= tol:
+                        if all(abs(t - c) > tol for c in cuts):
+                            cuts.append(t)
+        if not cuts:
+            pieces.append(seg)
+            continue
+        prev = 0.0
+        for t in sorted(cuts) + [length]:
+            a = (seg.p1[0] + prev * dx, seg.p1[1] + prev * dy)
+            b = (seg.p1[0] + t * dx, seg.p1[1] + t * dy)
+            pieces.append(Segment(a, b, seg.width, seg.color))
+            prev = t
+    return pieces
+
+
+def _decompose_into_branches(pieces: list[Segment], tol: float
+                             ) -> list[list[Segment]]:
+    """Dela upp ett sammanhängande rörnät i grenar vid förgreningspunkterna.
+
+    En mängdning redovisar varje rör mellan två avstick som en egen sträcka
+    (facit: 8,7 m + 6,3 m), medan en naiv kedjning gärna mäter rakt igenom
+    korsningen (15,0 m). Nodgraf över (redan klippta) segment; grenar
+    vandras fram mellan noder som inte har exakt två anslutningar."""
+    if len(pieces) <= 1:
+        return [list(pieces)]
+    cell = max(tol, 0.5)
+
+    # Nod-id per (klustrad) ändpunkt
+    node_pts: list[Point] = []
+    node_grid: dict[tuple[int, int], list[int]] = {}
+
+    def node_id(p: Point) -> int:
+        gx, gy = int(p[0] // cell), int(p[1] // cell)
+        for ddx in (-1, 0, 1):
+            for ddy in (-1, 0, 1):
+                for idx in node_grid.get((gx + ddx, gy + ddy), []):
+                    if dist(p, node_pts[idx]) <= tol:
+                        return idx
+        node_pts.append(p)
+        node_grid.setdefault((gx, gy), []).append(len(node_pts) - 1)
+        return len(node_pts) - 1
+
+    ends: list[tuple[int, int]] = []
+    adj: dict[int, list[int]] = {}
+    for i, piece in enumerate(pieces):
+        a, b = node_id(piece.p1), node_id(piece.p2)
+        ends.append((a, b))
+        adj.setdefault(a, []).append(i)
+        adj.setdefault(b, []).append(i)
+
+    # 3. Vandra grenar mellan noder med grad != 2
+    used: set[int] = set()
+    branches: list[list[Segment]] = []
+
+    def walk(start: int, from_node: int) -> list[Segment]:
+        chain = []
+        i, n = start, from_node
+        while True:
+            used.add(i)
+            chain.append(pieces[i])
+            a, b = ends[i]
+            other = b if a == n else a
+            if len(adj[other]) != 2:
+                break
+            nxt = [j for j in adj[other] if j != i and j not in used]
+            if not nxt:
+                break
+            i, n = nxt[0], other
+        return chain
+
+    for node, incident in adj.items():
+        if len(incident) == 2:
+            continue
+        for i in incident:
+            if i not in used:
+                branches.append(walk(i, node))
+    for i in range(len(pieces)):     # rena cykler utan ändar
+        if i not in used:
+            branches.append(walk(i, ends[i][0]))
+    return branches
+
+
+def build_chains(segments: list[Segment], cfg: Config,
+                 pts_per_meter: float | None = None) -> list[PipeChain]:
     """Bygg PipeChain-objekt med punktlista, längd och bbox (Del B punkt 4)."""
     # Streckade linjer slås först ihop till hela linjer, så att luckorna
-    # räknas som rör (och bara en gång) innan nätet kedjas ihop.
+    # räknas som rör (och bara en gång) innan nätet kedjas ihop. Därefter
+    # klipps segmenten där avstick ansluter mitt på dem, så att både
+    # kedjningen och grendelningen ser anslutningarna.
     segments = merge_collinear_runs(segments, cfg.dash_gap_pt,
                                     cfg.dash_angle_deg)
+    segments = _split_at_contacts(segments, cfg.chain_tol_pt)
+    min_len = cfg.min_chain_len_pt
+    if pts_per_meter and cfg.min_run_m > 0:
+        min_len = max(min_len, cfg.min_run_m * pts_per_meter)
+
     chains: list[PipeChain] = []
+    dropped = 0
+    dropped_len = 0.0
     for group, bridged in chain_segments(segments, cfg.chain_tol_pt):
-        length = sum(s.length for s in group) + bridged
-        if length < cfg.min_chain_len_pt:
-            continue
-        xs = [c for s in group for c in (s.p1[0], s.p2[0])]
-        ys = [c for s in group for c in (s.p1[1], s.p2[1])]
-        points = []
-        for s in group:
-            points.extend([s.p1, s.p2])
-        chain = PipeChain(
-            id=len(chains), segments=group, points=points,
-            length_pt=length,
-            bbox=BBox(min(xs), min(ys), max(xs), max(ys)),
-            endpoints=_chain_endpoints(group, cfg.chain_tol_pt),
-        )
-        chains.append(chain)
+        for branch in (_decompose_into_branches(group, cfg.chain_tol_pt)
+                       if cfg.split_at_junctions else [group]):
+            length = sum(s.length for s in branch)
+            if length < min_len:
+                dropped += 1
+                dropped_len += length
+                continue
+            chains.extend(_make_chain(branch, 0.0, cfg, next_id=len(chains)))
+    if dropped:
+        log.info("Kortare grenar än %.2f pt bortsorterade som "
+                 "kopplingsstumpar: %d st (%.0f pt totalt)",
+                 min_len, dropped, dropped_len)
     return chains
+
+
+def _make_chain(group: list[Segment], bridged: float, cfg: Config,
+                next_id: int) -> list[PipeChain]:
+    length = sum(s.length for s in group) + bridged
+    xs = [c for s in group for c in (s.p1[0], s.p2[0])]
+    ys = [c for s in group for c in (s.p1[1], s.p2[1])]
+    points = []
+    for s in group:
+        points.extend([s.p1, s.p2])
+    return [PipeChain(
+        id=next_id, segments=group, points=points,
+        length_pt=length,
+        bbox=BBox(min(xs), min(ys), max(xs), max(ys)),
+        endpoints=_chain_endpoints(group, cfg.chain_tol_pt),
+    )]
 
 
 def flag_frame_chains(chains: list[PipeChain], page_rect: fitz.Rect,
@@ -562,7 +701,8 @@ def assign_vertical_symbols(chains: list[PipeChain],
     return assigned
 
 
-def detect_pipes(page: fitz.Page, cfg: Config
+def detect_pipes(page: fitz.Page, cfg: Config,
+                 pts_per_meter: float | None = None
                  ) -> tuple[list[PipeChain], DrawingData, float,
                             tuple[float, float, float] | None]:
     """Hela Del B: extrahera, välj kluster, filtrera, kedja, flagga ram."""
@@ -574,7 +714,7 @@ def detect_pipes(page: fitz.Page, cfg: Config
     width, color = clusters[0]
     pipe_segments = filter_pipe_segments(data, clusters, None, cfg)
     log.info("Rörsegment i valt kluster: %d", len(pipe_segments))
-    chains = build_chains(pipe_segments, cfg)
+    chains = build_chains(pipe_segments, cfg, pts_per_meter)
     flag_frame_chains(chains, page.rect, cfg)
     n_symbols = assign_vertical_symbols(chains, data.small_symbols, cfg)
     active = [c for c in chains if not c.excluded]

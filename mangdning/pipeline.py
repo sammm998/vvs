@@ -112,18 +112,22 @@ def run_pipeline(input_pdf: str | Path, cfg: Config, out_dir: str | Path,
 
         codes = extract_codes(all_hits, cfg)
 
+        # --- Del D1: skala (behövs redan i Del B, eftersom minsta
+        # mängdade rörlängd anges i meter) ---
+        stage("scale")
+        scale = determine_scale(all_hits, cfg)
+
         # --- Del B: rörsträckor ur vektordata ---
         stage("pipes")
-        chains, drawing_data, pipe_width, pipe_color = detect_pipes(page, cfg)
+        chains, drawing_data, pipe_width, pipe_color = detect_pipes(
+            page, cfg, scale.pts_per_meter if scale.known else None)
 
         # --- Del C: koppla kod <-> rör via ledartrådar ---
         stage("linking")
         leaders = find_leader_candidates(drawing_data, pipe_width, chains, cfg)
         link_codes_to_pipes(codes, chains, leaders, cfg)
 
-        # --- Del D: skala + mängdning ---
-        stage("scale")
-        scale = determine_scale(all_hits, cfg)
+        # --- Del D: mängdning ---
         if on_scale is not None:
             on_scale(scale, chains)
         stage("quantify")

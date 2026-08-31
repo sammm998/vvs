@@ -448,9 +448,16 @@ function setZoom(z) {
 let excludeZones = [];        // normaliserade [fx0,fy0,fx1,fy1]
 let excluding = false;
 
+let excludeBound = false;
+
 function setupExclude(jobId) {
   const viewer = $("viewer"), frame = $("frame"), img = $("preview");
   const btn = $("exclude-mode");
+  // rita om kvarvarande zoner på den nya förhandsvisningen
+  frame.querySelectorAll(".zonebox").forEach(el => el.remove());
+  redrawZoneBoxes();
+  if (excludeBound) return;   // lyssnarna får inte staplas vid omkörning
+  excludeBound = true;
   btn.onclick = () => {
     excluding = !excluding;
     viewer.classList.toggle("excluding", excluding);
@@ -499,6 +506,21 @@ function setupExclude(jobId) {
   });
 }
 
+function redrawZoneBoxes() {
+  const frame = $("frame"), img = $("preview");
+  if (!img.naturalWidth) return;
+  const w = img.naturalWidth, h = img.naturalHeight;
+  excludeZones.forEach(z => {
+    const box = document.createElement("div");
+    box.className = "zonebox";
+    box.style.left = (z[0] * w) + "px";
+    box.style.top = (z[1] * h) + "px";
+    box.style.width = ((z[2] - z[0]) * w) + "px";
+    box.style.height = ((z[3] - z[1]) * h) + "px";
+    frame.appendChild(box);
+  });
+}
+
 function renderZones() {
   const wrap = $("zones");
   wrap.innerHTML = excludeZones.map((z, i) =>
@@ -507,9 +529,8 @@ function renderZones() {
   wrap.querySelectorAll("button").forEach(b => {
     b.onclick = () => {
       excludeZones.splice(Number(b.dataset.i), 1);
-      document.querySelectorAll(".zonebox").forEach((el, j) => {
-        if (j === Number(b.dataset.i)) el.remove();
-      });
+      document.querySelectorAll(".zonebox").forEach(el => el.remove());
+      redrawZoneBoxes();
       renderZones();
     };
   });
