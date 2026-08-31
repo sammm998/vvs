@@ -107,6 +107,12 @@ class Config:
         default_factory=lambda: dict(DEFAULT_VERTICAL_HEIGHTS))
     system_prefixes: dict[str, str] = field(
         default_factory=lambda: dict(DEFAULT_SYSTEM_PREFIXES))
+    # "5xKV2-X31" betyder fem parallella rör. I de ritningsmallar vi sett
+    # ritas de fem rören som fem egna linjer, och de mäts då redan var för
+    # sig – att dessutom multiplicera längden med N dubbelräknar dem
+    # (facit: KV2-X31-16 = 5 rader à ca 6,7 m, inte 5 x 33,4 m). Sätt till
+    # True bara för mallar där bunten ritas som EN linje.
+    nx_multiplies_length: bool = False
     symbol_max_diameter_pt: float = 10.0  # vertikalsymbolens storlek
     symbol_pipe_tol_pt: float = 6.0
 
@@ -115,8 +121,10 @@ class Config:
         default_factory=list)
 
     # --- Output ---
+    # Ledartrådslagret ritar en grön linje per kopplad kod och gör ritningen
+    # svårläst på täta ritningar – med som val, men inte som standard.
     layers: list[str] = field(
-        default_factory=lambda: ["codes", "pipes", "links"])
+        default_factory=lambda: ["codes", "pipes"])
     page: int = 0
 
     def compiled_code_regex(self) -> re.Pattern:

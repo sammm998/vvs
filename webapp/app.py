@@ -52,6 +52,33 @@ def _safe_pdf_name(filename: str | None) -> str:
     return f"{stem}.pdf"
 
 
+def _zones_to_points(spec: str, pdf_bytes: bytes, page_index: int
+                     ) -> list[tuple[float, float, float, float]]:
+    """Områden som användaren ritat på förhandsvisningen kommer som andelar
+    av bildens bredd/höjd (0-1) och räknas här om till PDF-punkter, så de är
+    oberoende av vilken DPI förhandsvisningen renderades i."""
+    import fitz
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        rect = doc[page_index].rect
+    finally:
+        doc.close()
+
+    zones = []
+    for part in spec.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        values = [float(v) for v in part.split(",")]
+        if len(values) != 4:
+            raise ValueError(f"Ogiltigt område '{part}'")
+        fx0, fy0, fx1, fy1 = values
+        zones.append((min(fx0, fx1) * rect.width, min(fy0, fy1) * rect.height,
+                      max(fx0, fx1) * rect.width, max(fy0, fy1) * rect.height))
+    return zones
+
+
 def _cleanup_old_jobs() -> None:
     now = time.time()
     with _jobs_lock:
@@ -127,6 +154,7 @@ async def create_job(
     page: int = Form(default=1),
     dpi: str = Form(default=""),
     ocr: str = Form(default="auto"),  # auto | force | off
+    exclude_zones: str = Form(default=""),  # "fx0,fy0,fx1,fy1;..." 0-1
 ):
     _cleanup_old_jobs()
     data = await file.read()
@@ -152,6 +180,9 @@ async def create_job(
             cfg.skip_ocr = True
         elif ocr != "auto":
             raise ValueError(f"ocr måste vara auto/force/off, inte '{ocr}'")
+        if exclude_zones.strip():
+            cfg.exclude_zones.extend(
+                _zones_to_points(exclude_zones, data, cfg.page))
     except ValueError as exc:
         raise HTTPException(400, f"Ogiltig parameter: {exc}")
 

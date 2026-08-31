@@ -52,17 +52,33 @@ def test_en_rad_per_rorstracka_inte_summerat_per_kod():
     assert agg.total_langd_m == pytest.approx(600 / PTS_PER_M, abs=0.05)
 
 
-def test_nx_kod_multiplicerar_langden():
-    """Del D punkt 5: "2xKV1-X31" på en 10 m-sträcka => 20 m i mängdningen."""
-    cfg = Config()
+def _nx_result(cfg):
     length_pt = 10 * PTS_PER_M
     codes = [make_code(0, "2xKV1-X31", count=2, linked_chain=0)]
     codes[0].base_code = "KV1-X31"
     chains = [make_chain(0, length_pt, linked=[0])]
-    result = build_quantities(codes, chains, make_scale(), {}, {}, cfg)
-    row = next(r for r in result.rows if r.langd_m is not None)
+    return build_quantities(codes, chains, make_scale(), {}, {}, cfg)
+
+
+def test_nx_kod_multiplicerar_inte_nar_roren_ritas_var_for_sig():
+    """En bunt "2xKV1-X31" ritas normalt som två egna linjer, som mäts var
+    för sig. Att dessutom gånga längden med 2 vore dubbelräkning (facit:
+    KV2-X31-16 = 5 rader à ca 6,7 m, inte 5 x totalen)."""
+    cfg = Config()
+    assert cfg.nx_multiplies_length is False
+    row = next(r for r in _nx_result(cfg).rows if r.langd_m is not None)
+    assert row.langd_m == pytest.approx(10.0, abs=0.05)
+    assert "ej multiplicerad" in row.kommentar
+
+
+def test_nx_kod_multiplicerar_nar_mallen_ritar_bunten_som_en_linje():
+    """Del D punkt 5: för mallar där bunten är EN ritad linje ska längden
+    multipliceras med N."""
+    cfg = Config()
+    cfg.nx_multiplies_length = True
+    row = next(r for r in _nx_result(cfg).rows if r.langd_m is not None)
     assert row.langd_m == pytest.approx(20.0, abs=0.05)
-    assert "parallella" in row.kommentar
+    assert "multiplicerad" in row.kommentar
 
 
 def test_punktkomponenter_ar_forstklassiga_rader():

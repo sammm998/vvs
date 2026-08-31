@@ -43,15 +43,10 @@ def _chain_label(chain: PipeChain, codes_by_id: dict, scale) -> str:
         code = codes_by_id.get(chain.linked_codes[0])
         if code:
             parts.append(code.full_code)
-            if code.count > 1:
-                parts.append(f"x{code.count}")
     if scale is not None and scale.known:
         meters = scale.to_meters(chain.length_pt)
         if meters is not None:
-            n = meters * (codes_by_id[chain.linked_codes[0]].count
-                          if chain.linked_codes
-                          and chain.linked_codes[0] in codes_by_id else 1)
-            parts.append(f"{n:.1f}".replace(".", ",") + " m")
+            parts.append(f"{meters:.1f}".replace(".", ",") + " m")
     else:
         parts.append(f"{chain.length_pt:.0f} pt")
     return " ".join(parts)

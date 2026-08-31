@@ -65,8 +65,9 @@ def test_hela_pipelinen_pa_syntetisk_ritning(drawing_pdf):
     s3_row = next(r for r in result.rows if r.subject == "S3-R8-75")
     assert s3_row.langd_m == pytest.approx(300.0 / PTS_PER_M, abs=0.05)
     kv_row = next(r for r in result.rows if "KV1-X31" in r.subject)
-    # Nx: 2 parallella rör => dubbel längd
-    assert kv_row.langd_m == pytest.approx(2 * 150.0 / PTS_PER_M, abs=0.05)
+    # Nx multiplicerar inte som standard – de två rören ritas var för sig
+    assert kv_row.langd_m == pytest.approx(150.0 / PTS_PER_M, abs=0.05)
+    assert "ej multiplicerad" in kv_row.kommentar
     brunn_row = next(r for r in result.rows if r.subject == "B7-GOLVBRUNN")
     assert brunn_row.antal == 1
     doc.close()

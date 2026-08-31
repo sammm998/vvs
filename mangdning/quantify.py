@@ -97,9 +97,14 @@ def build_quantities(codes: list[CodeHit], chains: list[PipeChain],
         n = primary.count
         eff_len = (length_m if scale.known else chain.length_pt)
         if n > 1:
-            # Nx-notation: N parallella fysiska rör på en ritad linje
-            eff_len = eff_len * n
-            flags.append(f"{n} parallella rör ({primary.raw_text})")
+            if cfg.nx_multiplies_length:
+                # bunten är ritad som EN linje => N fysiska rör
+                eff_len = eff_len * n
+                flags.append(f"{n} parallella rör ({primary.raw_text}), "
+                             "längden multiplicerad")
+            else:
+                flags.append(f"{n} parallella rör ({primary.raw_text}) – "
+                             "ritade var för sig, längden ej multiplicerad")
         if primary.conf < 60:
             flags.append(f"låg OCR-confidence ({primary.conf:.0f})")
 

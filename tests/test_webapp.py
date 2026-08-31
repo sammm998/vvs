@@ -91,3 +91,56 @@ def test_startsidan_serveras(client):
 
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_uteslutna_omraden_filtrerar_bort_ror(client, drawing_pdf):
+    """Områden som ritats på förhandsvisningen skickas som andelar av
+    bilden (0-1) och ska räknas om till PDF-punkter och filtrera bort
+    det som ligger innanför – t.ex. rör i väggar eller legendtabeller."""
+    def run(zones):
+        with open(drawing_pdf, "rb") as f:
+            res = client.post(
+                "/api/jobs",
+                files={"file": ("ritning.pdf", f, "application/pdf")},
+                data={"scale": "1:50", "ocr": "off", "exclude_zones": zones})
+        assert res.status_code == 200, res.text
+        job = _wait_for_done(client, res.json()["job_id"])
+        assert job["status"] == "done", job.get("error")
+        return job
+
+    utan = run("")
+    # testritningens rörsträckor ligger i övre halvan (y 300-500 av 842)
+    med = run("0,0.3,1,0.7")
+    assert med["summary"]["n_rorstrackor"] < utan["summary"]["n_rorstrackor"]
+
+
+def test_ogiltigt_omrade_ger_400(client, drawing_pdf):
+    with open(drawing_pdf, "rb") as f:
+        res = client.post(
+            "/api/jobs",
+            files={"file": ("ritning.pdf", f, "application/pdf")},
+            data={"exclude_zones": "0,0,1"})
+    assert res.status_code == 400
+
+
+def test_forhandsvisning_serveras_som_bild(client, drawing_pdf):
+    with open(drawing_pdf, "rb") as f:
+        res = client.post("/api/jobs",
+                          files={"file": ("ritning.pdf", f, "application/pdf")},
+                          data={"scale": "1:50", "ocr": "off"})
+    job = _wait_for_done(client, res.json()["job_id"])
+    name = job["files"]["forhandsvisning_png"]
+    img = client.get(f"/api/jobs/{res.json()['job_id']}/files/{name}")
+    assert img.status_code == 200
+    assert img.headers["content-type"] == "image/png"
+    assert img.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_mangdrader_foljer_med_i_status(client, drawing_pdf):
+    with open(drawing_pdf, "rb") as f:
+        res = client.post("/api/jobs",
+                          files={"file": ("ritning.pdf", f, "application/pdf")},
+                          data={"scale": "1:50", "ocr": "off"})
+    job = _wait_for_done(client, res.json()["job_id"])
+    assert job["rows"], "resultatsidan ska kunna visa mängdningen utan Excel"
+    assert {"subject", "langd", "lager", "kalla"} <= set(job["rows"][0])

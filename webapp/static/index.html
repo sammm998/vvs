@@ -85,6 +85,22 @@
     background: #fff; max-height: 70vh; cursor: grab;
   }
   .viewer.dragging { cursor: grabbing; }
+  .viewer.excluding { cursor: crosshair; }
+  .viewer { position: relative; }
+  .zonebox {
+    position: absolute; border: 2px solid #b3261e;
+    background: rgba(179,38,30,.18); pointer-events: none;
+  }
+  .zonechip {
+    display: inline-block; padding: 3px 8px; margin: 3px 6px 3px 0;
+    border: 1px solid var(--border); border-radius: 999px; font-size: 12px;
+    background: #fff;
+  }
+  .zonechip button {
+    margin: 0 0 0 6px; padding: 0; border: 0; background: none;
+    color: var(--err); cursor: pointer; font: inherit;
+  }
+  #frame { position: relative; display: inline-block; }
   .viewer img { display: block; transform-origin: 0 0; max-width: none; }
   .zoombar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   .zbtn {
@@ -191,15 +207,23 @@
       färgad efter sin kod och har sin uträknade längd utsatt. Röda rutor =
       koder utan rörkoppling. Klicka för att zooma, dra för att panorera.</p>
     <div class="viewer" id="viewer">
-      <img id="preview" alt="Markerad ritning">
+      <div id="frame"><img id="preview" alt="Markerad ritning"></div>
     </div>
     <div class="zoombar">
+      <button type="button" class="zbtn" id="exclude-mode">✂︎ Uteslut område</button>
+      <button type="button" class="zbtn" id="rerun" hidden>Kör om utan de
+        uteslutna områdena</button>
       <button type="button" class="zbtn" id="zoom-out">−</button>
       <span id="zoom-label">Anpassad</span>
       <button type="button" class="zbtn" id="zoom-in">+</button>
       <button type="button" class="zbtn" id="zoom-fit">Passa in</button>
       <a id="open-pdf" class="zbtn" target="_blank" rel="noopener">Öppna
         markerad PDF</a>
+    </div>
+
+    <div id="zones-box" hidden>
+      <p class="hint" id="zones-hint"></p>
+      <div id="zones"></div>
     </div>
 
     <h3>Mängdning per rörsträcka</h3>
@@ -247,10 +271,15 @@ function onFile() {
   submitBtn.disabled = !f;
 }
 
-$("form").addEventListener("submit", async (e) => {
+$("form").addEventListener("submit", (e) => {
   e.preventDefault();
+  submitJob();
+});
+
+async function submitJob() {
   const f = fileInput.files[0];
   if (!f) return;
+  $("result-card").hidden = true;
   $("form-card").hidden = true;
   $("status-card").hidden = false;
   $("error").hidden = true;
@@ -266,6 +295,10 @@ $("form").addEventListener("submit", async (e) => {
   fd.append("dpi", $("dpi").value);
   fd.append("ocr", $("ocr").value);
   if ($("facit").files[0]) fd.append("facit", $("facit").files[0]);
+  if (excludeZones.length) {
+    fd.append("exclude_zones",
+      excludeZones.map(z => z.map(v => v.toFixed(5)).join(",")).join(";"));
+  }
 
   try {
     const res = await fetch("/api/jobs", { method: "POST", body: fd });
@@ -275,7 +308,7 @@ $("form").addEventListener("submit", async (e) => {
   } catch (err) {
     showError(err.message);
   }
-});
+}
 
 function poll(jobId) {
   pollTimer = setInterval(async () => {
@@ -390,6 +423,8 @@ function showPreview(jobId, job) {
   $("zoom-out").onclick = () => setZoom(zoom / 1.4);
   $("zoom-fit").onclick = () => setZoom(fitZoom);
   enableDragPan($("viewer"));
+  setupExclude(jobId);
+  $("rerun").onclick = () => submitJob();
 }
 
 function setZoom(z) {
@@ -410,9 +445,82 @@ function setZoom(z) {
     (img.naturalWidth * zoom - img.naturalWidth) + "px";
 }
 
+let excludeZones = [];        // normaliserade [fx0,fy0,fx1,fy1]
+let excluding = false;
+
+function setupExclude(jobId) {
+  const viewer = $("viewer"), frame = $("frame"), img = $("preview");
+  const btn = $("exclude-mode");
+  btn.onclick = () => {
+    excluding = !excluding;
+    viewer.classList.toggle("excluding", excluding);
+    btn.textContent = excluding ? "✓ Klar med uteslutning" : "✂︎ Uteslut område";
+    $("zones-box").hidden = false;
+    $("zones-hint").textContent = excluding
+      ? "Dra en ruta över det som INTE ska mängdas (t.ex. rör i väggar, "
+      + "legend, tabeller). Kör sedan om."
+      : "";
+  };
+
+  let drawing = null, box = null;
+  frame.addEventListener("mousedown", (e) => {
+    if (!excluding) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = img.getBoundingClientRect();
+    drawing = { x: e.clientX - r.left, y: e.clientY - r.top };
+    box = document.createElement("div");
+    box.className = "zonebox";
+    frame.appendChild(box);
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!drawing || !box) return;
+    const r = img.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    box.style.left = Math.min(drawing.x, x) + "px";
+    box.style.top = Math.min(drawing.y, y) + "px";
+    box.style.width = Math.abs(x - drawing.x) + "px";
+    box.style.height = Math.abs(y - drawing.y) + "px";
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (!drawing || !box) return;
+    const r = img.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    if (Math.abs(x - drawing.x) > 4 && Math.abs(y - drawing.y) > 4) {
+      // spara som andelar av bilden => oberoende av zoom och DPI
+      excludeZones.push([
+        Math.min(drawing.x, x) / r.width, Math.min(drawing.y, y) / r.height,
+        Math.max(drawing.x, x) / r.width, Math.max(drawing.y, y) / r.height,
+      ]);
+      renderZones();
+    } else {
+      box.remove();
+    }
+    drawing = null; box = null;
+  });
+}
+
+function renderZones() {
+  const wrap = $("zones");
+  wrap.innerHTML = excludeZones.map((z, i) =>
+    `<span class="zonechip">Område ${i + 1}` +
+    `<button type="button" data-i="${i}">✕</button></span>`).join("");
+  wrap.querySelectorAll("button").forEach(b => {
+    b.onclick = () => {
+      excludeZones.splice(Number(b.dataset.i), 1);
+      document.querySelectorAll(".zonebox").forEach((el, j) => {
+        if (j === Number(b.dataset.i)) el.remove();
+      });
+      renderZones();
+    };
+  });
+  $("rerun").hidden = excludeZones.length === 0;
+  $("zones-box").hidden = false;
+}
+
 function enableDragPan(el) {
   let down = false, sx = 0, sy = 0, sl = 0, st = 0;
   el.addEventListener("mousedown", (e) => {
+    if (excluding) return;
     down = true; sx = e.clientX; sy = e.clientY;
     sl = el.scrollLeft; st = el.scrollTop;
     el.classList.add("dragging"); e.preventDefault();
