@@ -70,7 +70,11 @@ class Config:
     # spillvatten på 2,04 pt och tappvatten på 1,44 pt). Alla signifikanta
     # kluster som är minst så här stor andel av det bredaste räknas som rör.
     pipe_widths: list[float] | None = None   # None = auto
-    pipe_width_ratio: float = 0.6
+    pipe_width_ratio: float = 0.45
+    # Minsta "sammanhang" (ritad längd / linjens utsträckning) för att en
+    # linjeklass ska räknas som rör. Rör löper sammanhängande (0,8-1,3);
+    # väggar, skraffering och rutnät är utspridda streck (under 0,3).
+    min_coverage: float = 0.5
     pipe_width_tol: float = 0.15          # relativ tolerans mot klustret
     # Ett bredd-kluster räknas som ett riktigt ritlager (och inte enstaka
     # specialobjekt) om det har minst så här många segment – båda villkoren

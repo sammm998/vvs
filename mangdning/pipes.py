@@ -125,6 +125,39 @@ def format_histogram(data: DrawingData) -> str:
     return "\n".join(lines)
 
 
+def coverage_ratio(segments: list[Segment]) -> float:
+    """Hur sammanhängande ligger segmenten längs sina egna linjer?
+
+    Segmenten grupperas per exakt linje (riktning + vinkelrätt läge) och
+    ritad längd ("bläck") jämförs med linjens totala utsträckning.
+
+    Rörledningar löper som sammanhängande sträckor: ritat ≈ utsträckning,
+    kvot nära 1 (streckade rör ligger runt 0,8). Väggar, skraffering,
+    rutnät och måttlinjer består i stället av korta streck utspridda längs
+    samma linjer, med stora tomrum emellan – kvoten hamnar under 0,3.
+    Det är den skillnaden som gör att byggnadsstommen kan sorteras bort
+    automatiskt i stället för att användaren ska rita uteslutningszoner.
+    """
+    if not segments:
+        return 0.0
+    groups: dict[tuple, list[float]] = {}
+    ink = 0.0
+    for seg in segments:
+        ink += seg.length
+        dx, dy = _direction(seg)
+        if (dx, dy) == (0.0, 0.0):
+            continue
+        if dx < 0 or (dx == 0.0 and dy < 0):
+            dx, dy = -dx, -dy
+        key = (round(dx, 3), round(dy, 3),
+               round(dx * seg.p1[1] - dy * seg.p1[0]))
+        ts = groups.setdefault(key, [])
+        ts.append(seg.p1[0] * dx + seg.p1[1] * dy)
+        ts.append(seg.p2[0] * dx + seg.p2[1] * dy)
+    span = sum(max(ts) - min(ts) for ts in groups.values())
+    return ink / span if span > 0 else 0.0
+
+
 def select_pipe_clusters(data: DrawingData, cfg: Config
                          ) -> list[tuple[float, tuple[float, float, float] | None]]:
     """Identifiera vilka bredd/färg-kluster som är rörlinjer.
@@ -163,14 +196,37 @@ def select_pipe_clusters(data: DrawingData, cfg: Config
         width = max((w for w, _ in common if w > 0), default=common[0][0])
         return [(width, data.width_color[width].most_common(1)[0][0])]
 
-    widest = max(w for w, _ in significant)
-    chosen = sorted((w for w, _ in significant
-                     if w >= widest * cfg.pipe_width_ratio), reverse=True)
+    by_width: dict[float, list[Segment]] = {}
+    for seg in data.segments:
+        by_width.setdefault(seg.width, []).append(seg)
+
+    # Två krav, som tillsammans skiljer rör från allt annat:
+    #  1. sammanhang – rör löper i sträckor, väggar/skraffering är utspridda
+    #  2. grovlek – ledartrådar och byggnadsstomme är sammanhängande men
+    #     ritas med tunnare penna än rören
+    scored = [(w, coverage_ratio(by_width[w])) for w, _ in significant]
+    contiguous = [w for w, cov in scored if cov >= cfg.min_coverage]
+    if contiguous:
+        widest = max(contiguous)
+        chosen = sorted((w for w in contiguous
+                         if w >= widest * cfg.pipe_width_ratio), reverse=True)
+    else:   # ingen klass ser ut som rör – ta den bredaste ändå
+        chosen = [max(w for w, _ in significant)]
+        log.warning("Ingen linjeklass har sammanhängande sträckor "
+                    "(kvot >= %.2f) – faller tillbaka på den bredaste. "
+                    "Kalibrera med --calibrate/--pipe-width.", cfg.min_coverage)
+
     out = [(w, data.width_color[w].most_common(1)[0][0]) for w in chosen]
-    log.info("Rörkluster (auto): %s "
-             "(verifiera med --calibrate, överstyr med --pipe-width)",
-             ", ".join(f"{w:.2f} pt {c} [{data.width_histogram[w]} seg]"
-                       for w, c in out))
+    log.info("Rörkluster (auto): %s", ", ".join(
+        f"{w:.2f} pt {c} [{data.width_histogram[w]} seg, "
+        f"sammanhang {dict(scored).get(w, 0):.2f}]" for w, c in out))
+    for w, cov in sorted(scored, reverse=True):
+        if w in chosen:
+            continue
+        why = ("utspridda streck => byggnadsstomme/skraffering"
+               if cov < cfg.min_coverage
+               else "för tunn penna => ledartråd/stomlinje")
+        log.info("Bortsorterat: %.2f pt (sammanhang %.2f) – %s", w, cov, why)
     return out
 
 

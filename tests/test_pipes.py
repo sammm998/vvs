@@ -9,7 +9,7 @@ from mangdning.config import Config
 from mangdning.models import Segment
 from mangdning.pipes import (DrawingData, build_chains, chain_segments,
                              filter_pipe_segments, flag_frame_chains,
-                             select_pipe_cluster)
+                             select_pipe_cluster, select_pipe_clusters)
 
 
 def seg(x1, y1, x2, y2, width=2.04, color=(0.0, 0.0, 0.0)):
@@ -95,16 +95,36 @@ def _drawing_data(segments):
     return data
 
 
-def test_klusterval_auto_valjer_nast_vanligaste_bredare_klustret():
-    """Vanligaste bredden är tunna text-/måttstreck; rörlinjerna är det
-    näst vanligaste, tydligt bredare klustret."""
-    thin = [seg(i, 0, i + 1, 0, width=0.36) for i in range(500)]
-    pipes = [seg(i, 50, i + 1, 50, width=2.04) for i in range(80)]
-    other = [seg(i, 90, i + 1, 90, width=0.72) for i in range(5)]
-    data = _drawing_data(thin + pipes + other)
-    width, color = select_pipe_cluster(data, Config())
-    assert width == pytest.approx(2.04)
-    assert color == (0.0, 0.0, 0.0)
+def test_klusterval_valjer_sammanhangande_linjer_och_sorterar_bort_skraffering():
+    """Rör löper sammanhängande längs sin linje; väggar/skraffering är
+    korta streck utspridda längs samma linjer med stora tomrum. Det är den
+    skillnaden – inte bredden – som skiljer dem åt."""
+    # rör: sammanhängande sträcka av streck i rad
+    pipes = [seg(i * 10, 50, i * 10 + 9, 50, width=2.04) for i in range(80)]
+    # skraffering: korta streck glest utspridda längs samma linjer
+    hatch = [seg(i * 60, 0, i * 60 + 3, 0, width=0.72) for i in range(500)]
+    data = _drawing_data(hatch + pipes)
+    clusters = select_pipe_clusters(data, Config())
+    assert [w for w, _ in clusters] == [pytest.approx(2.04)]
+
+
+def test_klusterval_tar_med_flera_rorbredder():
+    """En ritning kan rita olika system med olika penna (spillvatten 2,04,
+    tappvatten 1,44) – båda ska med."""
+    spill = [seg(i * 10, 50, i * 10 + 9, 50, width=2.04) for i in range(80)]
+    tapp = [seg(i * 10, 90, i * 10 + 9, 90, width=1.44) for i in range(80)]
+    hatch = [seg(i * 60, 0, i * 60 + 3, 0, width=0.72) for i in range(500)]
+    data = _drawing_data(hatch + spill + tapp)
+    widths = [w for w, _ in select_pipe_clusters(data, Config())]
+    assert widths == [pytest.approx(2.04), pytest.approx(1.44)]
+
+
+def test_coverage_ratio_skiljer_ror_fran_skraffering():
+    from mangdning.pipes import coverage_ratio
+    pipe_run = [seg(i * 10, 0, i * 10 + 9, 0) for i in range(20)]
+    scattered = [seg(i * 100, 0, i * 100 + 3, 0) for i in range(20)]
+    assert coverage_ratio(pipe_run) > 0.8
+    assert coverage_ratio(scattered) < 0.2
 
 
 def test_klusterval_konfigurerad_bredd_vinner():
