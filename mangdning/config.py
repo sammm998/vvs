@@ -98,8 +98,18 @@ class Config:
     # Streckade rör exporteras som fristående korta segment; luckor upp till
     # denna längd mellan kollinjära segment bryggas och räknas som rörlängd.
     # 0 = av (behandla varje streck som en egen sträcka).
-    dash_gap_pt: float = 5.0
+    # None = mät ritningens egen streckning (självkalibrerande).
+    # Ett tal överstyr med en fast lucka i punkter; 0 stänger av bryggning.
+    dash_gap_pt: float | None = None
     dash_angle_deg: float = 8.0
+    # En ledning bryts i CAD där en annan passerar över. Sätts detta till en
+    # längd bryggas sådana luckor om ett annat rör faktiskt korsar dem.
+    # Avstängt som standard: en lucka är också hur två SKILDA rör ritas, och
+    # ett korsande rör är indicium men inte bevis för att ledningen fortsätter.
+    # Gammal kommentar:
+    # här långa bryggas därför om ett annat rör faktiskt korsar dem – röret
+    # är obrutet i verkligheten. 0 stänger av.
+    crossing_gap_pt: float = 0.0
     bezier_steps: int = 4                 # utplattning av rörböjar (kurvor)
     frame_len_pt: float = 700.0           # längre raka ensamma linjer = ram/rutnät
     # Dela rörsträckor vid förgreningar (avstick), så att varje rör mellan
@@ -112,7 +122,13 @@ class Config:
     # Kortare grenar än så här är kopplingsstumpar och symbolben vid
     # fördelare, inte rör som mängdas. Anges i meter och kräver känd skala;
     # utan skala används min_chain_len_pt i punkter.
-    min_run_m: float = 0.25         # kortare kedjor ignoreras (brus)
+    # Minsta sträcka som mängdas. Standardvärdet är INTE avvägt mot något
+    # facit utan följer av upplösningen: en gren kortare än kedjningens egen
+    # tolerans går inte att skilja från en artefakt av att vi klippt vid
+    # anslutningar inom just den toleransen. Vill man utesluta korta
+    # kopplingsstumpar sätts värdet högre – då är det ett medvetet val, inte
+    # en dold trimning.
+    min_run_m: float | None = None
     # Etiketter under denna längd ritas inte ut – korta stumpar skulle annars
     # täcka ritningen med "0,2 m"-rutor. Raderna finns kvar i förteckningen.
     label_min_m: float = 1.0

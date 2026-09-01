@@ -315,9 +315,103 @@ def _parallel(d1: tuple[float, float], d2: tuple[float, float],
     return abs(d1[0] * d2[0] + d1[1] * d2[1]) >= cos_tol
 
 
+def estimate_dash_gap(segments: list[Segment], angle_deg: float = 6.0,
+                      offset_tol_pt: float = 1.0,
+                      max_consider_pt: float = 40.0) -> float:
+    """Mät ritningens egen streckning i stället för att anta en lucka.
+
+    Streckade linjer har en regelbunden lucka; mellanrummen mellan skilda
+    rör är oregelbundna och mycket större. Luckorna mellan grannstreck på
+    samma linje mäts därför upp, och tröskeln läggs strax ovanför den
+    typiska streckluckan (75:e percentilen med marginal). Ritningar med
+    heldragna rör ger inga luckor alls och får tröskeln 0.
+
+    Det gör streckhanteringen självkalibrerande per ritning i stället för
+    en konstant som råkar passa de ritningar den provats på.
+    """
+    buckets: dict[tuple, list[tuple[float, float]]] = {}
+    for seg in segments:
+        dx, dy = _direction(seg)
+        if (dx, dy) == (0.0, 0.0):
+            continue
+        if dx < 0 or (dx == 0.0 and dy < 0):
+            dx, dy = -dx, -dy
+        offset = dx * seg.p1[1] - dy * seg.p1[0]
+        key = (round(dx, 3), round(dy, 3), round(offset / offset_tol_pt))
+        t1 = seg.p1[0] * dx + seg.p1[1] * dy
+        t2 = seg.p2[0] * dx + seg.p2[1] * dy
+        buckets.setdefault(key, []).append((min(t1, t2), max(t1, t2)))
+
+    gaps: list[float] = []
+    for spans in buckets.values():
+        if len(spans) < 2:
+            continue
+        spans.sort()
+        end = spans[0][1]
+        for start, stop in spans[1:]:
+            gap = start - end
+            if 0.0 < gap <= max_consider_pt:
+                gaps.append(gap)
+            end = max(end, stop)
+    if len(gaps) < 20:
+        return 0.0
+    gaps.sort()
+    typical = gaps[int(len(gaps) * 0.75)]
+    threshold = typical * 1.3
+    log.info("Streckning uppmätt ur ritningen: typisk lucka %.1f pt "
+             "(%d mellanrum) => bryggas upp till %.1f pt",
+             typical, len(gaps), threshold)
+    return threshold
+
+
+def _segments_cross(a1: Point, a2: Point, b1: Point, b2: Point) -> bool:
+    """Skär två sträckor varandra?"""
+    def side(p, q, r):
+        return ((q[0] - p[0]) * (r[1] - p[1])
+                - (q[1] - p[1]) * (r[0] - p[0]))
+    d1, d2 = side(b1, b2, a1), side(b1, b2, a2)
+    d3, d4 = side(a1, a2, b1), side(a1, a2, b2)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _crossing_index(segments: list[Segment], cell: float = 40.0):
+    """Rutnätsindex över segment, för att snabbt hitta korsande rör."""
+    grid: dict[tuple[int, int], list[Segment]] = {}
+    for seg in segments:
+        x0, x1 = sorted((seg.p1[0], seg.p2[0]))
+        y0, y1 = sorted((seg.p1[1], seg.p2[1]))
+        for gx in range(int(x0 // cell), int(x1 // cell) + 1):
+            for gy in range(int(y0 // cell), int(y1 // cell) + 1):
+                grid.setdefault((gx, gy), []).append(seg)
+    return grid, cell
+
+
+def _gap_is_crossing(p: Point, q: Point, index, own: set) -> bool:
+    """Bryts linjen här av att ett annat rör korsar?
+
+    CAD-ritningar bryter en ledning där en annan passerar över, för att visa
+    vilken som ligger överst. Röret är obrutet i verkligheten, så en sådan
+    lucka ska räknas som rör – till skillnad från luften mellan två skilda
+    ledningar."""
+    grid, cell = index
+    seen = set()
+    for gx in range(int(min(p[0], q[0]) // cell), int(max(p[0], q[0]) // cell) + 1):
+        for gy in range(int(min(p[1], q[1]) // cell),
+                        int(max(p[1], q[1]) // cell) + 1):
+            for other in grid.get((gx, gy), []):
+                key = id(other)
+                if key in seen or key in own:
+                    continue
+                seen.add(key)
+                if _segments_cross(p, q, other.p1, other.p2):
+                    return True
+    return False
+
+
 def merge_collinear_runs(segments: list[Segment], max_gap_pt: float,
                          angle_deg: float = 6.0,
-                         offset_tol_pt: float = 1.0) -> list[Segment]:
+                         offset_tol_pt: float = 1.0,
+                         crossing_gap_pt: float = 0.0) -> list[Segment]:
     """Slå ihop streckade linjer till hela linjer (Del B punkt 3).
 
     AutoCAD exporterar en streckad rörlinje som fristående korta streck med
@@ -333,7 +427,12 @@ def merge_collinear_runs(segments: list[Segment], max_gap_pt: float,
     if max_gap_pt <= 0 or not segments:
         return list(segments)
 
-    buckets: dict[tuple, list[Segment]] = {}
+    # Gruppera per riktning; inom en riktning grupperas segmenten efter sitt
+    # vinkelräta läge med ett svep. Hård bucketing (offset // tol) kapar en
+    # linje mitt itu när dess streck råkar ligga på var sin sida om en
+    # hinkgräns – och streck på samma ritade linje varierar upp till ett par
+    # tiondels punkt i sidled.
+    by_dir: dict[tuple, list[tuple[float, Segment]]] = {}
     loose: list[Segment] = []
     for seg in segments:
         dx, dy = _direction(seg)
@@ -343,14 +442,26 @@ def merge_collinear_runs(segments: list[Segment], max_gap_pt: float,
         if dx < 0 or (dx == 0.0 and dy < 0):      # kanonisk riktning
             dx, dy = -dx, -dy
         offset = dx * seg.p1[1] - dy * seg.p1[0]  # vinkelrätt läge för linjen
-        # Exakt riktning + vinkelrätt läge: bara streck på PRECIS samma
-        # linje hamnar i samma hink. Grövre vinkelhinkar drar in närliggande
-        # rör och skulle då kapa bort verklig längd.
-        key = (round(dx, 3), round(dy, 3), round(offset / offset_tol_pt))
-        buckets.setdefault(key, []).append(seg)
+        by_dir.setdefault((round(dx, 3), round(dy, 3)), []).append((offset, seg))
+
+    index = _crossing_index(segments) if crossing_gap_pt else (None, 1.0)
+
+    groups: list[list[Segment]] = []
+    for entries in by_dir.values():
+        entries.sort(key=lambda e: e[0])
+        run = [entries[0][1]]
+        prev = entries[0][0]
+        for offset, seg in entries[1:]:
+            if offset - prev <= offset_tol_pt:
+                run.append(seg)
+            else:
+                groups.append(run)
+                run = [seg]
+            prev = offset
+        groups.append(run)
 
     merged: list[Segment] = list(loose)
-    for group in buckets.values():
+    for group in groups:
         if len(group) == 1:
             merged.append(group[0])
             continue
@@ -365,9 +476,20 @@ def merge_collinear_runs(segments: list[Segment], max_gap_pt: float,
             spans.append((min(t1, t2), max(t1, t2), i, seg))
         spans.sort()
 
+        own = {id(sg) for sg in group}
         run_start, run_end, _i, first = spans[0]
         for start, end, _i, seg in spans[1:]:
-            if start - run_end <= max_gap_pt:     # samma streckade linje
+            gap = start - run_end
+            bridge = gap <= max_gap_pt            # vanlig strecklucka
+            if not bridge and crossing_gap_pt and gap <= crossing_gap_pt:
+                base = first.p1
+                t_base = base[0] * dx + base[1] * dy
+                a = (base[0] + (run_end - t_base) * dx,
+                     base[1] + (run_end - t_base) * dy)
+                b = (base[0] + (start - t_base) * dx,
+                     base[1] + (start - t_base) * dy)
+                bridge = _gap_is_crossing(a, b, index, own)
+            if bridge:
                 run_end = max(run_end, end)
             else:
                 merged.append(_span_segment(first, run_start, run_end, dx, dy))
@@ -676,14 +798,20 @@ def build_chains(segments: list[Segment], cfg: Config,
                  pts_per_meter: float | None = None) -> list[PipeChain]:
     """Bygg PipeChain-objekt med punktlista, längd och bbox (Del B punkt 4)."""
     # Streckade linjer slås först ihop till hela linjer, så att luckorna
-    # räknas som rör (och bara en gång) innan nätet kedjas ihop. Därefter
-    # klipps segmenten där avstick ansluter mitt på dem, så att både
-    # kedjningen och grendelningen ser anslutningarna.
-    segments = merge_collinear_runs(segments, cfg.dash_gap_pt,
-                                    cfg.dash_angle_deg)
+    # räknas som rör (och bara en gång) innan nätet kedjas ihop. Luckans
+    # storlek mäts ur ritningens egen streckning; cfg.dash_gap_pt sätts bara
+    # om användaren vill överstyra. Därefter klipps segmenten där avstick
+    # ansluter mitt på dem, så att både kedjningen och grendelningen ser
+    # anslutningarna.
+    dash_gap = (cfg.dash_gap_pt if cfg.dash_gap_pt is not None
+                else estimate_dash_gap(segments, cfg.dash_angle_deg))
+    segments = merge_collinear_runs(segments, dash_gap, cfg.dash_angle_deg,
+                                    crossing_gap_pt=cfg.crossing_gap_pt)
     segments = _split_at_contacts(segments, cfg.chain_tol_pt)
-    min_len = cfg.min_chain_len_pt
-    if pts_per_meter and cfg.min_run_m > 0:
+    # Under kedjningstoleransen går en gren inte att skilja från en artefakt
+    # av klippningen – det är upplösningsgränsen, inte en trimmad tröskel.
+    min_len = max(cfg.min_chain_len_pt, 2.0 * cfg.chain_tol_pt)
+    if pts_per_meter and cfg.min_run_m:
         min_len = max(min_len, cfg.min_run_m * pts_per_meter)
 
     # Kedja per lager: två system som korsar varandra på ritningen hör inte

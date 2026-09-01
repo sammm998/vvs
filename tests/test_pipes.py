@@ -9,7 +9,8 @@ from mangdning.config import Config
 from mangdning.models import Segment
 from mangdning.pipes import (DrawingData, build_chains, chain_segments,
                              filter_pipe_segments, flag_frame_chains,
-                             select_pipe_cluster, select_pipe_clusters)
+                             merge_collinear_runs, select_pipe_cluster,
+                             select_pipe_clusters)
 
 
 def seg(x1, y1, x2, y2, width=2.04, color=(0.0, 0.0, 0.0)):
@@ -163,7 +164,6 @@ def test_streckad_linje_slas_ihop_till_hel_linje():
     """AutoCAD exporterar streckade rör som fristående korta streck. Summan
     av strecken är bara "bläcket"; sträckans verkliga längd innehåller även
     luckorna."""
-    from mangdning.pipes import merge_collinear_runs
     # 5 streck à 6 pt med 4 pt luckor => ritat 30 pt, verklig längd 46 pt
     segments = [seg(i * 10, 0, i * 10 + 6, 0) for i in range(5)]
     assert sum(s.length for s in segments) == pytest.approx(30.0)
@@ -176,7 +176,6 @@ def test_streckad_linje_slas_ihop_till_hel_linje():
 def test_sammanslagning_haller_isar_parallella_ror():
     """Två rör bredvid varandra ligger på olika linjer och får aldrig slås
     ihop, hur nära de än går."""
-    from mangdning.pipes import merge_collinear_runs
     segments = [seg(0, 0, 40, 0), seg(0, 3, 40, 3)]
     merged = merge_collinear_runs(segments, max_gap_pt=5.0)
     assert len(merged) == 2
@@ -185,14 +184,12 @@ def test_sammanslagning_haller_isar_parallella_ror():
 
 def test_sammanslagning_haller_isar_skilda_ror_pa_samma_linje():
     """Två rör långt ifrån varandra på samma linje är skilda sträckor."""
-    from mangdning.pipes import merge_collinear_runs
     segments = [seg(0, 0, 40, 0), seg(200, 0, 240, 0)]
     merged = merge_collinear_runs(segments, max_gap_pt=5.0)
     assert len(merged) == 2
 
 
 def test_sammanslagning_avstangd_med_noll():
-    from mangdning.pipes import merge_collinear_runs
     segments = [seg(i * 10, 0, i * 10 + 6, 0) for i in range(5)]
     assert len(merge_collinear_runs(segments, max_gap_pt=0.0)) == 5
 
@@ -299,3 +296,57 @@ def test_kedjor_hoppar_aldrig_mellan_system():
     assert len(chains) == 2
     assert {c.segments[0].layer for c in chains} == {
         "p|V-53BB-FE--S3-", "p|V-52BB-FE--V1-"}
+
+
+def test_streckluckan_mats_ur_ritningen():
+    """Streckluckan ska härledas ur ritningens egen streckning, inte vara en
+    konstant som råkar passa de ritningar den provats på."""
+    from mangdning.pipes import estimate_dash_gap
+
+    # streckad linje: 6 pt streck, 4 pt lucka, i flera rader
+    segments = []
+    for row in range(6):
+        for i in range(12):
+            segments.append(seg(i * 10, row * 20, i * 10 + 6, row * 20))
+    gap = estimate_dash_gap(segments)
+    assert 4.0 <= gap <= 6.5, gap          # strax ovanför den uppmätta luckan
+
+    merged = merge_collinear_runs(segments, gap)
+    assert len(merged) == 6                # en hel linje per rad
+
+
+def test_heldragen_ritning_ger_ingen_bryggning():
+    """Utan streckning finns inga luckor att mäta – då ska inget bryggas."""
+    from mangdning.pipes import estimate_dash_gap
+
+    segments = [seg(i * 10, 0, (i + 1) * 10, 0) for i in range(40)]
+    assert estimate_dash_gap(segments) == 0.0
+
+
+def test_kollinjara_streck_kapas_inte_av_hinkgrans():
+    """Streck på samma ritade linje varierar någon tiondels punkt i sidled.
+    De ska ändå höra ihop, oavsett var de hamnar mot en avrundningsgräns."""
+    segments = [
+        seg(0, 180.4, 6, 180.4),
+        seg(10, 180.6, 16, 180.6),      # 0,2 pt sidled, olika avrundning
+        seg(20, 180.5, 26, 180.5),
+    ]
+    merged = merge_collinear_runs(segments, max_gap_pt=6.0, offset_tol_pt=1.0)
+    assert len(merged) == 1
+    assert merged[0].length == pytest.approx(26.0, abs=0.5)
+
+
+def test_korsningslucka_bryggas_bara_nar_ett_ror_korsar():
+    """En bruten ledning där ett annat rör passerar över är obruten i
+    verkligheten – men bara om något faktiskt korsar luckan."""
+    line = [seg(0, 0, 40, 0), seg(70, 0, 110, 0)]      # 30 pt lucka
+    crossing = [seg(55, -20, 55, 20)]
+
+    utan = merge_collinear_runs(line, max_gap_pt=6.0, crossing_gap_pt=40.0)
+    assert len(utan) == 2                  # inget korsar => två rör
+
+    med = merge_collinear_runs(line + crossing, max_gap_pt=6.0,
+                               crossing_gap_pt=40.0)
+    langa = [s for s in med if s.length > 50]
+    assert len(langa) == 1                 # korsande rör => en ledning
+    assert langa[0].length == pytest.approx(110.0)
