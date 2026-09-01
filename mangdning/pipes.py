@@ -540,7 +540,47 @@ def _split_at_contacts(segments: list[Segment], tol: float) -> list[Segment]:
     return pieces
 
 
-def _decompose_into_branches(pieces: list[Segment], tol: float
+def _prune_stubs(pieces: list[Segment], tol: float, min_len: float
+                 ) -> list[Segment]:
+    """Ta bort korta återvändsgrenar (symbolben och kopplingsstumpar).
+
+    Vid fördelare och anslutningar ritas små ben ut från röret. De är inte
+    ledning som mängdas, och om de inte rensas bort här sugs de upp i den
+    genomgående sträckan när grenarna vandras.
+    """
+    if min_len <= 0 or not pieces:
+        return pieces
+    cell = max(tol, 0.5)
+    keep = list(pieces)
+    for _ in range(4):            # några varv räcker; stubbar är korta
+        nodes: dict[tuple[int, int], list[int]] = {}
+        ends: list[tuple[tuple, tuple]] = []
+        for i, seg in enumerate(keep):
+            e = []
+            for p in (seg.p1, seg.p2):
+                key = (round(p[0] / cell), round(p[1] / cell))
+                nodes.setdefault(key, []).append(i)
+                e.append(key)
+            ends.append((e[0], e[1]))
+        drop = set()
+        for i, seg in enumerate(keep):
+            if seg.length >= min_len:
+                continue
+            a, b = ends[i]
+            deg_a = len({j for j in nodes.get(a, []) if j != i})
+            deg_b = len({j for j in nodes.get(b, []) if j != i})
+            if deg_a == 0 or deg_b == 0:      # fri ände => återvändsgren
+                drop.add(i)
+        if not drop:
+            break
+        keep = [s for i, s in enumerate(keep) if i not in drop]
+    if len(keep) != len(pieces):
+        log.debug("Rensade %d korta återvändsgrenar", len(pieces) - len(keep))
+    return keep
+
+
+def _decompose_into_branches(pieces: list[Segment], tol: float,
+                             cfg_straight_deg: float = 30.0
                              ) -> list[list[Segment]]:
     """Dela upp ett sammanhängande rörnät i grenar vid förgreningspunkterna.
 
@@ -575,9 +615,22 @@ def _decompose_into_branches(pieces: list[Segment], tol: float
         adj.setdefault(a, []).append(i)
         adj.setdefault(b, []).append(i)
 
-    # 3. Vandra grenar mellan noder med grad != 2
+    # 3. Vandra grenar. Vid ett avstick (grad 3) fortsätter röret rakt fram
+    # och det är avsticket som är en egen sträcka – precis som en mängdare
+    # mäter: en genomgående ledning plus dess grenar, inte en ny sträcka vid
+    # varje korsning.
     used: set[int] = set()
     branches: list[list[Segment]] = []
+    cos_straight = math.cos(math.radians(cfg_straight_deg))
+
+    def _dir_from(i: int, node: int) -> tuple[float, float]:
+        """Riktning för segment i, räknat bort från noden node."""
+        a, b = ends[i]
+        seg = pieces[i]
+        p, q = (seg.p1, seg.p2) if a == node else (seg.p2, seg.p1)
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        n = math.hypot(dx, dy)
+        return (dx / n, dy / n) if n else (0.0, 0.0)
 
     def walk(start: int, from_node: int) -> list[Segment]:
         chain = []
@@ -587,12 +640,24 @@ def _decompose_into_branches(pieces: list[Segment], tol: float
             chain.append(pieces[i])
             a, b = ends[i]
             other = b if a == n else a
-            if len(adj[other]) != 2:
+            candidates = [j for j in adj[other] if j != i and j not in used]
+            if not candidates:
                 break
-            nxt = [j for j in adj[other] if j != i and j not in used]
-            if not nxt:
-                break
-            i, n = nxt[0], other
+            if len(adj[other]) == 2:
+                nxt = candidates[0]
+            else:
+                # förgrening: följ den gren som fortsätter rakt fram
+                incoming = _dir_from(i, n)
+                best, best_dot = None, cos_straight
+                for j in candidates:
+                    d = _dir_from(j, other)
+                    dot = incoming[0] * d[0] + incoming[1] * d[1]
+                    if dot >= best_dot:
+                        best, best_dot = j, dot
+                if best is None:
+                    break
+                nxt = best
+            i, n = nxt, other
         return chain
 
     for node, incident in adj.items():
@@ -633,8 +698,10 @@ def build_chains(segments: list[Segment], cfg: Config,
     groups = [g for segs in by_layer.values()
               for g in chain_segments(segs, cfg.chain_tol_pt)]
     for group, bridged in groups:
-        for branch in (_decompose_into_branches(group, cfg.chain_tol_pt)
-                       if cfg.split_at_junctions else [group]):
+        pruned = _prune_stubs(group, cfg.chain_tol_pt, min_len)
+        for branch in (_decompose_into_branches(pruned, cfg.chain_tol_pt,
+                                                cfg.junction_straight_deg)
+                       if cfg.split_at_junctions else [pruned]):
             length = sum(s.length for s in branch)
             if length < min_len:
                 dropped += 1

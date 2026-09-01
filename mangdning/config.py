@@ -105,11 +105,14 @@ class Config:
     # Dela rörsträckor vid förgreningar (avstick), så att varje rör mellan
     # två avstick blir en egen rad – som i en manuell mängdning.
     split_at_junctions: bool = True
+    # Vid ett avstick fortsätter den genomgående ledningen rakt fram om
+    # riktningen ändras mindre än så här; annars räknas den som avslutad.
+    junction_straight_deg: float = 30.0
     min_chain_len_pt: float = 3.0
     # Kortare grenar än så här är kopplingsstumpar och symbolben vid
     # fördelare, inte rör som mängdas. Anges i meter och kräver känd skala;
     # utan skala används min_chain_len_pt i punkter.
-    min_run_m: float = 0.15         # kortare kedjor ignoreras (brus)
+    min_run_m: float = 0.25         # kortare kedjor ignoreras (brus)
     # Etiketter under denna längd ritas inte ut – korta stumpar skulle annars
     # täcka ritningen med "0,2 m"-rutor. Raderna finns kvar i förteckningen.
     label_min_m: float = 1.0

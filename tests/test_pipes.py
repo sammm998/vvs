@@ -197,24 +197,24 @@ def test_sammanslagning_avstangd_med_noll():
     assert len(merge_collinear_runs(segments, max_gap_pt=0.0)) == 5
 
 
-def test_forgreningar_delar_kedjan_i_grenar():
-    """Ett T-format nät ska bli tre sträckor (som i en manuell mängdning),
-    inte en enda lång kedja rakt genom korsningen."""
+def test_genomgaende_ledning_fortsatter_genom_avstick():
+    """En mängdare mäter den genomgående ledningen i ett stycke och
+    avsticket för sig – inte tre stumpar vid varje korsning."""
     segments = [
-        seg(0, 0, 100, 0),      # vänster gren
-        seg(100, 0, 200, 0),    # höger gren (kollinjär fortsättning!)
+        seg(0, 0, 100, 0),      # vänster del
+        seg(100, 0, 200, 0),    # höger del (rakt fram)
         seg(100, 0, 100, 80),   # avstick nedåt
     ]
     cfg = Config()
     cfg.dash_gap_pt = 0.0   # ingen streck-sammanslagning i testet
     chains = build_chains(segments, cfg)
-    assert len(chains) == 3
-    assert sorted(round(c.length_pt) for c in chains) == [80, 100, 100]
+    assert len(chains) == 2
+    assert sorted(round(c.length_pt) for c in chains) == [80, 200]
 
 
-def test_avstick_mitt_pa_ett_segment_klipper_det():
-    """Avsticket ansluter mitt på ett långt segment – segmentet ska klippas
-    vid anslutningen så att grenarna blir 100+100+80, inte 200+80."""
+def test_avstick_mitt_pa_ett_segment_blir_egen_stracka():
+    """Avsticket ansluter mitt på ett obrutet segment. Ledningen ska mätas
+    hel (200) och avsticket separat (80)."""
     segments = [
         seg(0, 0, 200, 0),      # ett obrutet segment
         seg(100, 0, 100, 80),   # avstick mitt på
@@ -222,8 +222,21 @@ def test_avstick_mitt_pa_ett_segment_klipper_det():
     cfg = Config()
     cfg.dash_gap_pt = 0.0
     chains = build_chains(segments, cfg)
+    assert len(chains) == 2
+    assert sorted(round(c.length_pt) for c in chains) == [80, 200]
+
+
+def test_kors_utan_rak_fortsattning_delas():
+    """Två grenar som båda viker av kan inte vara samma genomgående rör."""
+    segments = [
+        seg(0, 0, 100, 0),       # in från vänster
+        seg(100, 0, 100, 80),    # ned
+        seg(100, 0, 100, -80),   # upp
+    ]
+    cfg = Config()
+    cfg.dash_gap_pt = 0.0
+    chains = build_chains(segments, cfg)
     assert len(chains) == 3
-    assert sorted(round(c.length_pt) for c in chains) == [80, 100, 100]
 
 
 def test_rak_ledning_utan_avstick_delas_inte():
