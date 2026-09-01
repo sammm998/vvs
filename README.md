@@ -9,7 +9,24 @@ Ett fristående CLI-verktyg i Python som tar en CAD-exporterad PDF-ritning
 4. **mängdar** – total rörlängd per typ/dimension, antal per komponentkod,
 5. levererar en markerad PDF + mängdförteckning (XLSX/CSV) som kalkylunderlag.
 
-## Grundprincip – två tekniker för två olika saker
+## Grundprincip – läs CAD-lagren, gissa bara när de saknas
+
+AutoCAD-exporterade PDF:er bär i regel med sig ritningens **lagerstruktur**
+(optional content groups) med originalnamnen från CAD-modellen, t.ex.
+`268140-W-50-P-A-00|V-53BB-FE--S3-`. Det är exakt information, inte en
+gissning: lagret säger både att linjen är en VVS-ledning och vilket system
+den tillhör. Namnen följer svensk byggstandard (SB11/BSAB) där första
+tecknet är disciplin (`V` = VVS, `K` = konstruktion, `A` = arkitekt),
+mittfältet byggdel (`53BB` = spillvatten, `52BB` = tappvatten) och
+typfältet innehåll (`FE` = ledning, `T` = text).
+
+Verktyget använder därför lagren i första hand. Väggar och stomme faller
+bort för att de ligger på K- och A-lager – inte för att någon tröskel råkar
+sortera bort dem. Följer ritningen inte standarden kan lagren väljas för
+hand (i webbappen eller med `--pipe-layer`), och saknar PDF:en lager helt
+faller verktyget tillbaka på linjebredd och geometri.
+
+## Reservvägen – två tekniker för två olika saker
 
 AutoCAD exporterar text som **vektoriserade konturer** (särskilt SHX-typsnitt),
 inte maskinläsbar text. Verktyget kontrollerar alltid först hur många riktiga
@@ -123,7 +140,10 @@ mangdning/
   ocr_codes.py           Del A: rendering ≥400 DPI, rutvis OCR (PSM 11+6),
                          dedup (text + position), Nx-notation, radparning
                          kod+dimension, exkluderingszoner
-  pipes.py               Del B: linjebredd-histogram, dynamiskt klusterval,
+  cadlayers.py           tolkning av CAD-lagernamn (SB11): rörlager,
+                         systemkategori, disciplin
+  pipes.py               Del B: lagerbaserat urval i första hand; annars
+                         linjebredd-histogram, dynamiskt klusterval,
                          ram/rutnätsfiltrering, union-find-kedjning,
                          vertikalsymboler (små cirklar vid rörändar)
   linking.py             Del C: ledartrådar (tunna diagonaler) kod→rör,

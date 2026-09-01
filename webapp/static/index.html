@@ -96,6 +96,14 @@
     border: 1px solid var(--border); border-radius: 999px; font-size: 12px;
     background: #fff;
   }
+  .layerlist { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 4px 14px; }
+  .layerlist label {
+    display: flex; align-items: baseline; gap: 8px; font-size: 13px;
+    color: var(--ink); margin: 0; padding: 3px 0;
+  }
+  .layerlist input { margin: 0; }
+  .layerlist .m { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+  .layerlist .sys { color: var(--muted); font-size: 12px; }
   .zonechip button {
     margin: 0 0 0 6px; padding: 0; border: 0; background: none;
     color: var(--err); cursor: pointer; font: inherit;
@@ -226,6 +234,10 @@
       <div id="zones"></div>
     </div>
 
+    <h3>CAD-lager</h3>
+    <p class="hint" id="layer-hint" style="margin-top:-6px"></p>
+    <div id="layers"></div>
+
     <h3>Mängdning per rörsträcka</h3>
     <div class="tablewrap"><table id="qty"></table></div>
     <p class="hint" id="qty-note"></p>
@@ -295,6 +307,9 @@ async function submitJob() {
   fd.append("dpi", $("dpi").value);
   fd.append("ocr", $("ocr").value);
   if ($("facit").files[0]) fd.append("facit", $("facit").files[0]);
+  if (layerChoice && layerChoice.length) {
+    fd.append("pipe_layers", layerChoice.join(";"));
+  }
   if (excludeZones.length) {
     fd.append("exclude_zones",
       excludeZones.map(z => z.map(v => v.toFixed(5)).join(",")).join(";"));
@@ -393,6 +408,7 @@ function showResult(jobId, job) {
   }
 
   showPreview(jobId, job);
+  showLayers(s.lager || []);
   showTable(job.rows || []);
 
   const warnings = (s.varningar || []).concat(s.antal_kontroller || []);
@@ -551,6 +567,39 @@ function enableDragPan(el) {
     if (!down) return;
     el.scrollLeft = sl - (e.clientX - sx);
     el.scrollTop = st - (e.clientY - sy);
+  });
+}
+
+let layerChoice = null;   // null = automatiskt val ur lagernamnen
+
+function showLayers(layers) {
+  const box = $("layers");
+  if (!layers.length) {
+    $("layer-hint").textContent =
+      "PDF:en bär inga CAD-lager – rören identifierades i stället utifrån " +
+      "linjebredd och geometri.";
+    box.innerHTML = "";
+    return;
+  }
+  const picked = layers.filter(l => l.ror);
+  $("layer-hint").innerHTML =
+    `Rören hämtas direkt ur ritningens CAD-lager (exakt, inte gissat). ` +
+    `<b>${picked.length}</b> lager tolkades som VVS-ledningar. ` +
+    `Stämmer det inte för den här ritningen – bocka i rätt lager och kör om.`;
+  box.className = "layerlist";
+  box.innerHTML = layers.map((l, i) => `
+    <label title="${escapeHtml(l.raw)}">
+      <input type="checkbox" data-layer="${escapeHtml(l.namn)}" ${l.ror ? "checked" : ""}>
+      <span>${escapeHtml(l.namn)}${l.system ? ` <span class="sys">${escapeHtml(l.system)}</span>` : ""}</span>
+      <span class="m">${l.meter == null ? "" : l.meter + " m"}</span>
+    </label>`).join("");
+  box.querySelectorAll("input").forEach(cb => {
+    cb.onchange = () => {
+      layerChoice = [...box.querySelectorAll("input:checked")]
+        .map(el => el.dataset.layer);
+      $("rerun").hidden = false;
+      $("rerun").textContent = "Kör om med valda lager";
+    };
   });
 }
 

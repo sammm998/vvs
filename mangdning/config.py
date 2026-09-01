@@ -68,6 +68,11 @@ class Config:
     min_tile_ink: float = 0.002
 
     # --- Del B: rördetektering ---
+    # CAD-lagren i PDF:en är originalinformation och används i första hand;
+    # linjebredd/geometri är bara reserv när lager saknas.
+    use_layers: bool = True
+    pipe_layer_regex: str | None = None   # eget mönster för rörlager
+    pipe_layers: list[str] | None = None  # explicit vald lista av lager
     pipe_width: float | None = None       # None = auto via histogram
     # En ritning kan rita olika system med olika penna (i vår testfil
     # spillvatten på 2,04 pt och tappvatten på 1,44 pt). Alla signifikanta

@@ -233,3 +233,56 @@ def test_rak_ledning_utan_avstick_delas_inte():
     chains = build_chains(segments, cfg)
     assert len(chains) == 1   # hörn är ingen förgrening
     assert chains[0].length_pt == pytest.approx(250.0)
+
+
+def test_lagerbaserat_val_identifierar_rorlager():
+    """CAD-lagren i PDF:en är originalinformation: rören ska väljas ur dem
+    i stället för att gissas fram ur linjebredd."""
+    from mangdning.pipes import select_by_layers
+
+    pipe = [Segment((i * 10.0, 0.0), (i * 10.0 + 9, 0.0), 2.04, (0, 0, 0),
+                    "proj|V-53BB-FE--S3-") for i in range(20)]
+    wall = [Segment((i * 10.0, 50.0), (i * 10.0 + 9, 50.0), 2.04, (0, 0, 0),
+                    "HUS A|K-27B---EI_") for i in range(40)]
+    text = [Segment((i * 2.0, 90.0), (i * 2.0 + 1, 90.0), 0.72, (0, 0, 0),
+                    "proj|V-53BB--T--S3--") for i in range(60)]
+    data = DrawingData(segments=pipe + wall + text)
+
+    result = select_by_layers(data, Config())
+    assert result is not None
+    segments, systems = result
+    assert {s.layer for s in segments} == {"proj|V-53BB-FE--S3-"}
+    assert systems["proj|V-53BB-FE--S3-"] == "Spill- dagvatten"
+
+
+def test_lagerval_kan_overstyras_av_anvandaren():
+    from mangdning.pipes import select_by_layers
+
+    a = [Segment((0.0, 0.0), (50.0, 0.0), 2.04, (0, 0, 0), "proj|V-53BB-FE--S3-")]
+    b = [Segment((0.0, 9.0), (50.0, 9.0), 2.04, (0, 0, 0), "proj|EGET-LAGER")]
+    data = DrawingData(segments=a + b)
+
+    cfg = Config()
+    cfg.pipe_layers = ["EGET-LAGER"]
+    segments, _ = select_by_layers(data, cfg)
+    assert {s.layer for s in segments} == {"proj|EGET-LAGER"}
+
+
+def test_utan_lager_faller_tillbaka_pa_geometrin():
+    from mangdning.pipes import select_by_layers
+
+    data = DrawingData(segments=[seg(0, 0, 50, 0)])   # inga lagernamn
+    assert select_by_layers(data, Config()) is None
+
+
+def test_kedjor_hoppar_aldrig_mellan_system():
+    """Ett spillvattenrör och ett tappvattenrör som korsar varandra hör inte
+    ihop, hur nära linjerna än ligger."""
+    cfg = Config()
+    cfg.dash_gap_pt = 0.0
+    spill = Segment((0.0, 0.0), (100.0, 0.0), 2.04, (0, 0, 0), "p|V-53BB-FE--S3-")
+    tapp = Segment((50.0, 0.0), (50.0, 60.0), 1.44, (0, 0, 0), "p|V-52BB-FE--V1-")
+    chains = build_chains([spill, tapp], cfg)
+    assert len(chains) == 2
+    assert {c.segments[0].layer for c in chains} == {
+        "p|V-53BB-FE--S3-", "p|V-52BB-FE--V1-"}

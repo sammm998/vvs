@@ -155,6 +155,7 @@ async def create_job(
     dpi: str = Form(default=""),
     ocr: str = Form(default="auto"),  # auto | force | off
     exclude_zones: str = Form(default=""),  # "fx0,fy0,fx1,fy1;..." 0-1
+    pipe_layers: str = Form(default=""),    # valda CAD-lager, ";"-separerade
 ):
     _cleanup_old_jobs()
     data = await file.read()
@@ -180,6 +181,8 @@ async def create_job(
             cfg.skip_ocr = True
         elif ocr != "auto":
             raise ValueError(f"ocr måste vara auto/force/off, inte '{ocr}'")
+        if pipe_layers.strip():
+            cfg.pipe_layers = [n for n in pipe_layers.split(";") if n.strip()]
         if exclude_zones.strip():
             cfg.exclude_zones.extend(
                 _zones_to_points(exclude_zones, data, cfg.page))

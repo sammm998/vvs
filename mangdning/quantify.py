@@ -81,10 +81,14 @@ def build_quantities(codes: list[CodeHit], chains: list[PipeChain],
             flags.append("skala okänd (längd i pt)")
 
         if primary is None:
+            # Systemet är känt ur CAD-lagret även utan kodtext – då är
+            # sträckan inte "okänd", bara omärkt.
+            subject = (f"{chain.system} (omärkt sträcka)" if chain.system
+                       else UNLINKED_SUBJECT)
             rows.append(QuantityRow(
-                subject=UNLINKED_SUBJECT,
-                lager="Okänt system",
-                color="#808080",
+                subject=subject,
+                lager=chain.system or "Okänt system",
+                color=color_for_code(subject),
                 langd_m=_round_m(length_m if scale.known else chain.length_pt),
                 kalla=f"chain:{chain.id}",
                 kommentar="; ".join(["okopplad rörsträcka"] + flags),
@@ -93,7 +97,9 @@ def build_quantities(codes: list[CodeHit], chains: list[PipeChain],
             continue
 
         subject = primary.full_code
-        system = system_for_code(primary.base_code, prefix_map, cfg)
+        # CAD-lagret är exakt och går före prefixgissning ur kodtexten
+        system = chain.system or system_for_code(
+            primary.base_code, prefix_map, cfg)
         n = primary.count
         eff_len = (length_m if scale.known else chain.length_pt)
         if n > 1:

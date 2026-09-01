@@ -13,6 +13,7 @@ from typing import Callable
 import fitz
 
 from .annotate import annotate_pdf
+from .cadlayers import layer_name, system_for_layer
 from .config import Config
 from .legend import parse_legend
 from .linking import find_leader_candidates, link_codes_to_pipes
@@ -183,6 +184,15 @@ def run_pipeline(input_pdf: str | Path, cfg: Config, out_dir: str | Path,
             "skala_metod": scale.method,
             "skala_text": scale.scale_text,
             "pts_per_meter": scale.pts_per_meter,
+            "lager": [
+                {"namn": layer_name(n), "raw": n,
+                 "meter": round(L / scale.pts_per_meter, 1) if scale.known
+                          else None,
+                 "ror": n in set(drawing_data.pipe_layers),
+                 "system": system_for_layer(n)}
+                for n, L in sorted(drawing_data.layer_lengths.items(),
+                                   key=lambda kv: -kv[1])[:60]
+            ],
             "varningar": list(result.warnings),
             "antal_kontroller": list(result.count_checks),
         }

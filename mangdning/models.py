@@ -96,6 +96,7 @@ class Segment:
     p2: Point
     width: float
     color: tuple[float, float, float] | None
+    layer: str = ""          # CAD-lagret linjen ritades på (om PDF:en bär det)
 
     @property
     def length(self) -> float:
@@ -119,6 +120,8 @@ class PipeChain:
     points: list[Point]           # alla ändpunkter (för uppslag/ritning)
     length_pt: float              # total längd i PDF-punkter
     bbox: BBox
+    layer: str = ""               # CAD-lagret sträckan tillhör
+    system: str | None = None     # systemkategori ur lagret, om känd
     endpoints: list[Point] = field(default_factory=list)  # grad-1-noder
     linked_codes: list[int] = field(default_factory=list)  # CodeHit.id
     vertical_symbols: int = 0     # antal vertikala rörfall-symboler på kedjan

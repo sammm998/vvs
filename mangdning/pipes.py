@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import fitz
 
+from .cadlayers import classify_layers, layer_name
 from .config import Config
 from .models import (BBox, PipeChain, Point, Segment, dist,
                      point_segment_distance)
@@ -31,6 +32,9 @@ class DrawingData:
     small_symbols: list[tuple[Point, float]] = field(default_factory=list)
     width_histogram: Counter = field(default_factory=Counter)
     width_color: dict[float, Counter] = field(default_factory=dict)
+    # CAD-lager: namn -> total ritad längd (pt), och vilka som valts som rör
+    layer_lengths: dict[str, float] = field(default_factory=dict)
+    pipe_layers: list[str] = field(default_factory=list)
 
 
 def _color_key(color) -> tuple[float, float, float] | None:
@@ -60,6 +64,7 @@ def extract_drawings(page: fitz.Page, cfg: Config) -> DrawingData:
     for d in page.get_drawings():
         width = round(d.get("width") or 0.0, 2)
         color = _color_key(d.get("color"))
+        layer = d.get("layer") or ""
         rect = d.get("rect")
         items = d.get("items") or []
 
@@ -84,13 +89,13 @@ def extract_drawings(page: fitz.Page, cfg: Config) -> DrawingData:
                 p1 = (item[1].x, item[1].y)
                 p2 = (item[2].x, item[2].y)
                 if p1 != p2:
-                    data.segments.append(Segment(p1, p2, width, color))
+                    data.segments.append(Segment(p1, p2, width, color, layer))
                     has_line = True
             elif kind == "re":
                 r = item[1]
                 corners = [(r.x0, r.y0), (r.x1, r.y0), (r.x1, r.y1), (r.x0, r.y1)]
                 for a, b in zip(corners, corners[1:] + corners[:1]):
-                    data.segments.append(Segment(a, b, width, color))
+                    data.segments.append(Segment(a, b, width, color, layer))
                 has_line = True
             elif kind == "c" and not is_symbol:
                 # Rörböjar ritas som Bezier-kurvor. Utan dem tappas både
@@ -101,14 +106,14 @@ def extract_drawings(page: fitz.Page, cfg: Config) -> DrawingData:
                         (item[3].x, item[3].y), (item[4].x, item[4].y),
                         cfg.bezier_steps):
                     if a != b:
-                        data.segments.append(Segment(a, b, width, color))
+                        data.segments.append(Segment(a, b, width, color, layer))
                 has_line = True
             elif kind == "qu":
                 q = item[1]
                 pts = [(q.ul.x, q.ul.y), (q.ur.x, q.ur.y),
                        (q.lr.x, q.lr.y), (q.ll.x, q.ll.y)]
                 for a, b in zip(pts, pts[1:] + pts[:1]):
-                    data.segments.append(Segment(a, b, width, color))
+                    data.segments.append(Segment(a, b, width, color, layer))
                 has_line = True
 
     for seg in data.segments:
@@ -378,7 +383,7 @@ def _span_segment(ref: Segment, t0: float, t1: float,
     t_base = base[0] * dx + base[1] * dy
     p0 = (base[0] + (t0 - t_base) * dx, base[1] + (t0 - t_base) * dy)
     p1 = (base[0] + (t1 - t_base) * dx, base[1] + (t1 - t_base) * dy)
-    return Segment(p0, p1, ref.width, ref.color)
+    return Segment(p0, p1, ref.width, ref.color, ref.layer)
 
 
 def chain_segments(segments: list[Segment], tol_pt: float,
@@ -530,7 +535,7 @@ def _split_at_contacts(segments: list[Segment], tol: float) -> list[Segment]:
         for t in sorted(cuts) + [length]:
             a = (seg.p1[0] + prev * dx, seg.p1[1] + prev * dy)
             b = (seg.p1[0] + t * dx, seg.p1[1] + t * dy)
-            pieces.append(Segment(a, b, seg.width, seg.color))
+            pieces.append(Segment(a, b, seg.width, seg.color, seg.layer))
             prev = t
     return pieces
 
@@ -616,10 +621,18 @@ def build_chains(segments: list[Segment], cfg: Config,
     if pts_per_meter and cfg.min_run_m > 0:
         min_len = max(min_len, cfg.min_run_m * pts_per_meter)
 
+    # Kedja per lager: två system som korsar varandra på ritningen hör inte
+    # ihop, och en sträcka får aldrig löpa från spillvatten över i tappvatten.
+    by_layer: dict[str, list[Segment]] = {}
+    for seg in segments:
+        by_layer.setdefault(seg.layer, []).append(seg)
+
     chains: list[PipeChain] = []
     dropped = 0
     dropped_len = 0.0
-    for group, bridged in chain_segments(segments, cfg.chain_tol_pt):
+    groups = [g for segs in by_layer.values()
+              for g in chain_segments(segs, cfg.chain_tol_pt)]
+    for group, bridged in groups:
         for branch in (_decompose_into_branches(group, cfg.chain_tol_pt)
                        if cfg.split_at_junctions else [group]):
             length = sum(s.length for s in branch)
@@ -701,20 +714,71 @@ def assign_vertical_symbols(chains: list[PipeChain],
     return assigned
 
 
+def select_by_layers(data: DrawingData, cfg: Config
+                     ) -> tuple[list[Segment], dict[str, str]] | None:
+    """Välj rörsegment utifrån CAD-lagren, om PDF:en bär dem.
+
+    Det här är den exakta vägen: lagret kommer från CAD-modellen och säger
+    både vad linjen är och vilket system den tillhör. Först när lager
+    saknas (eller inget lager ser ut som en VVS-ledning) faller vi tillbaka
+    på att gissa utifrån linjebredd och geometri.
+    """
+    if not cfg.use_layers:
+        return None
+    lengths: dict[str, float] = {}
+    for seg in data.segments:
+        if seg.layer:
+            lengths[seg.layer] = lengths.get(seg.layer, 0.0) + seg.length
+    if not lengths:
+        return None
+    pipe_layers, systems = classify_layers(lengths, cfg.pipe_layer_regex)
+    if cfg.pipe_layers is not None:
+        # användaren har valt lager själv i gränssnittet
+        wanted = set(cfg.pipe_layers)
+        pipe_layers = [n for n in lengths if layer_name(n) in wanted or n in wanted]
+        log.info("Rörlager valda av användaren: %d st", len(pipe_layers))
+    if not pipe_layers:
+        return None
+    chosen = set(pipe_layers)
+    segments = [s for s in data.segments if s.layer in chosen]
+    return segments, systems
+
+
 def detect_pipes(page: fitz.Page, cfg: Config,
                  pts_per_meter: float | None = None
                  ) -> tuple[list[PipeChain], DrawingData, float,
                             tuple[float, float, float] | None]:
-    """Hela Del B: extrahera, välj kluster, filtrera, kedja, flagga ram."""
+    """Hela Del B: extrahera, välj rörlinjer, kedja, flagga ram."""
     data = extract_drawings(page, cfg)
     log.info("Vektordata: %d segment, %d småsymboler",
              len(data.segments), len(data.small_symbols))
     log.debug("%s", format_histogram(data))
-    clusters = select_pipe_clusters(data, cfg)
-    width, color = clusters[0]
-    pipe_segments = filter_pipe_segments(data, clusters, None, cfg)
-    log.info("Rörsegment i valt kluster: %d", len(pipe_segments))
+
+    data.layer_lengths = {}
+    for seg in data.segments:
+        if seg.layer:
+            data.layer_lengths[seg.layer] = (
+                data.layer_lengths.get(seg.layer, 0.0) + seg.length)
+
+    by_layer = select_by_layers(data, cfg)
+    if by_layer is not None:
+        data.pipe_layers = sorted({s.layer for s in by_layer[0]})
+        pipe_segments, layer_systems = by_layer
+        widths = Counter(s.width for s in pipe_segments)
+        width = widths.most_common(1)[0][0] if widths else 0.0
+        color = None
+        log.info("Rörlinjer valda via CAD-lager: %d segment", len(pipe_segments))
+    else:
+        layer_systems = {}
+        clusters = select_pipe_clusters(data, cfg)
+        width, color = clusters[0]
+        pipe_segments = filter_pipe_segments(data, clusters, None, cfg)
+        log.info("Rörsegment i valt kluster: %d", len(pipe_segments))
+
     chains = build_chains(pipe_segments, cfg, pts_per_meter)
+    for chain in chains:
+        chain.layer = chain.segments[0].layer if chain.segments else ""
+        chain.system = layer_systems.get(chain.layer)
     flag_frame_chains(chains, page.rect, cfg)
     n_symbols = assign_vertical_symbols(chains, data.small_symbols, cfg)
     active = [c for c in chains if not c.excluded]
