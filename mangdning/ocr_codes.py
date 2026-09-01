@@ -70,12 +70,46 @@ def iter_tiles(width_px: int, height_px: int, tile_px: int, overlap: float):
             yield x, y, min(tile_px, width_px - x), min(tile_px, height_px - y)
 
 
-def render_page(page: fitz.Page, dpi: int):
-    """Rastrera sidan till en PIL-bild i gråskala."""
+def render_page(page: fitz.Page, dpi: int, declutter: bool = False):
+    """Rastrera sidan till en PIL-bild i gråskala.
+
+    Med declutter släcks ritningens rör-, konstruktions- och arkitektlager
+    innan rastreringen, via PDF:ens egna lagerinställningar. Kvar blir text,
+    måttsättning, legend och titelblock. Skillnaden för OCR:en är stor: rör
+    som korsar en beteckning och skrafferade väggar bakom texten är precis
+    det som får tesseract att läsa fel. Ritningens innehåll ändras inte –
+    bara vad som ritas ut i den bild vi läser.
+    """
     from PIL import Image
 
-    pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY)
-    return Image.frombytes("L", (pix.width, pix.height), pix.samples)
+    from .cadlayers import discipline, is_pipe_layer
+
+    doc = page.parent
+    restored: list[int] = []
+    if declutter:
+        try:
+            for cfg in doc.layer_ui_configs():
+                name = cfg["text"]
+                if (is_pipe_layer(name) or discipline(name) in ("K", "A")
+                        or "logo" in name.lower()):
+                    doc.set_layer_ui_config(cfg["number"], action=2)  # OFF
+                    restored.append(cfg["number"])
+            if restored:
+                log.info("OCR: släcker %d rör-/stomlager före rastrering – "
+                         "texten läses mot ren bakgrund", len(restored))
+        except Exception as exc:      # PDF utan lager, eller äldre PyMuPDF
+            log.debug("Kunde inte släcka lager före OCR (%s)", exc)
+            restored = []
+    try:
+        pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY)
+        img = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+    finally:
+        for number in restored:
+            try:
+                doc.set_layer_ui_config(number, action=1)   # ON igen
+            except Exception:
+                pass
+    return img
 
 
 def _ink_fraction(tile_img) -> float:
@@ -128,7 +162,7 @@ def ocr_page(page: fitz.Page, cfg: Config,
     import os
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    img = render_page(page, cfg.dpi)
+    img = render_page(page, cfg.dpi, declutter=cfg.ocr_declutter)
     px_to_pt = 72.0 / cfg.dpi
     tiles = list(iter_tiles(img.width, img.height, cfg.tile_px, cfg.tile_overlap))
 

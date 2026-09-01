@@ -62,6 +62,9 @@ class Config:
     force_ocr: bool = False
     skip_ocr: bool = False
     native_word_threshold: int = 100  # fler riktiga ord än så => PDF-text räcker
+    # Släck rör- och stomlager före OCR-rastreringen, så texten läses mot
+    # ren bakgrund i stället för genom rörledningar och väggskraffering.
+    ocr_declutter: bool = True
     ocr_threads: int = 0            # parallella tesseract-processer; 0 = auto
     # Rutor med mindre andel mörka pixlar än så här saknar text och
     # OCR-läses inte alls (tom ritningsyta på stora format).
